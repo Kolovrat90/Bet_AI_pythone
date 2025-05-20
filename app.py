@@ -124,7 +124,15 @@ if "outs_raw" in st.session_state or "candidates" in st.session_state:
             "pick_ru": "Pick",  "k_dec":  "Min Odds"
         })
 
-        view = df[["No","Use","Date","Time","Flag","League","Match","Pick","Min Odds","Edge %","Stake €"]]
+        # === Обработка пустой таблицы ===
+        expected_columns = [
+            "No", "Use", "Date", "Time", "Flag", "League", "Match",
+            "Pick", "Min Odds", "Edge %", "Stake €"
+        ]
+        if df.empty:
+            df = pd.DataFrame(columns=expected_columns)
+
+        view = df[expected_columns]
         edited = table_ph.data_editor(
             view,
             hide_index=True,
@@ -184,10 +192,11 @@ if btn_calc:
     df_fin = pd.DataFrame(rows)
 
     # Метрики
-    cols = metrics_ph.columns(len(df_fin.columns))
-    cols[df_fin.columns.get_loc("Min Odds")].metric("⌀ Min Odds", f"{df_fin['Min Odds'].mean():.2f}")
-    cols[df_fin.columns.get_loc("Edge %")].metric("⌀ Edge %",    f"{df_fin['Edge %'].mean():.1f} %")
-    cols[df_fin.columns.get_loc("Stake €")].metric("Σ Stake €",  f"{df_fin['Stake €'].sum():.0f}")
+    if not df_fin.empty:
+        cols = metrics_ph.columns(len(df_fin.columns))
+        cols[df_fin.columns.get_loc("Min Odds")].metric("⌀ Min Odds", f"{df_fin['Min Odds'].mean():.2f}")
+        cols[df_fin.columns.get_loc("Edge %")].metric("⌀ Edge %",    f"{df_fin['Edge %'].mean():.1f} %")
+        cols[df_fin.columns.get_loc("Stake €")].metric("Σ Stake €",  f"{df_fin['Stake €'].sum():.0f}")
 
     table_ph.dataframe(
         df_fin,
