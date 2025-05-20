@@ -1,0 +1,1233 @@
+=== Snapshot of C:\Code Projects\Bet_AI_pythone at 2025-05-20 14:30:45.197657 ===
+
+[DIR ] .pytest_cache
+[FILE] .pytest_cache\.gitignore (0 KB)
+----- begin content -----
+# Created by pytest automatically.
+*
+
+-----  end content  -----
+
+[FILE] .pytest_cache\CACHEDIR.TAG (0 KB)
+----- begin content -----
+Signature: 8a477f597d28d172789f06886806bc55
+# This file is a cache directory tag created by pytest.
+# For information about cache directory tags, see:
+#	https://bford.info/cachedir/spec.html
+
+-----  end content  -----
+
+[FILE] .pytest_cache\README.md (0 KB)
+----- begin content -----
+# pytest cache directory #
+
+This directory contains data from the pytest's cache plugin,
+which provides the `--lf` and `--ff` options, as well as the `cache` fixture.
+
+**Do not** commit this to version control.
+
+See [the docs](https://docs.pytest.org/en/stable/how-to/cache.html) for more information.
+
+-----  end content  -----
+
+[DIR ] .pytest_cache\v
+[DIR ] .pytest_cache\v\cache
+[FILE] .pytest_cache\v\cache\lastfailed (0 KB)
+----- begin content -----
+{
+  "tests/test_kelly.py::test_kelly_example": true
+}
+-----  end content  -----
+
+[FILE] .pytest_cache\v\cache\nodeids (0 KB)
+----- begin content -----
+[
+  "tests/test_kelly.py::test_kelly_example",
+  "tests/test_pipelines.py::test_detailed_analysis_integration",
+  "tests/test_pipelines.py::test_elo_cache",
+  "tests/test_pipelines.py::test_quick_prob_elo_difference",
+  "tests/test_pipelines.py::test_quick_prob_symmetry",
+  "tests/test_pipelines.py::test_quick_screen_filters",
+  "tests/test_pipelines.py::test_value_approx"
+]
+-----  end content  -----
+
+[FILE] .pytest_cache\v\cache\stepwise (0 KB)
+----- begin content -----
+[]
+-----  end content  -----
+
+[FILE] app.py (6 KB)
+----- begin content -----
+import os
+from datetime import datetime, date, time as dt_time
+import streamlit as st
+import pandas as pd
+
+from betai.pipelines import scan_days
+from betai.models import allocate_bank
+
+# ── Page config ──────────────────────────────────────────────────────────
+st.set_page_config(page_title="BetAI – Value Betting Scanner", page_icon="⚽", layout="wide")
+st.markdown("# ⚽ BetAI – Value Betting Scanner (MVP)")
+
+# ── API-ключ ──────────────────────────────────────────────────────────────
+API_KEY = st.secrets.get("APIFOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY")
+if not API_KEY:
+    st.error("Нужен ключ APIFOOTBALL_KEY в .streamlit/secrets.toml или как переменную окружения.")
+    st.stop()
+
+# ── Inputs ────────────────────────────────────────────────────────────────
+c0, c1, c2 = st.columns([1, 2, 2])
+with c0:
+    today_only = st.checkbox("Сегодня", True)
+with c1:
+    edge_pct = st.slider("Порог ценности, %", 1, 10, 5)
+with c2:
+    bank = st.number_input("Банк, €", min_value=10.0, step=50.0, value=1000.0, format="%.2f")
+
+days = 1 if today_only else st.selectbox("Сканировать дней вперёд", [1, 2, 3], 0)
+top_n = st.selectbox("Топ-лиг для анализа", [10, 15, 20, 25, 30], 0)
+
+btn_scan = st.button("🔍 Сканировать матчи", type="primary")
+btn_calc = st.button("💰 Рассчитать ставки")
+
+# ── Cached scan ───────────────────────────────────────────────────────────
+@st.cache_data(show_spinner=False)
+def _scan(d, e, n):
+    return scan_days(d, e, n)
+
+# ── Шаг 1: сканирование ────────────────────────────────────────────────────
+if btn_scan:
+    outs = _scan(days, edge_pct / 100.0, top_n)
+    st.session_state["outs_raw"] = outs
+    st.success(f"Найдено {len(outs)} value-исходов (edge ≥ {edge_pct}%)")
+
+# ── Шаг 2: редактор и результат в одном месте ──────────────────────────────
+if "outs_raw" in st.session_state:
+    outs = st.session_state["outs_raw"]
+
+    # Собираем DataFrame и фильтруем уже сыгранные матчи
+    df = pd.DataFrame(o.model_dump() for o in outs)
+    now = datetime.now()
+    df = df[df.apply(
+        lambda r: datetime.combine(date.fromisoformat(r.date),
+                                   dt_time.fromisoformat(r.time)) > now,
+        axis=1
+    )].reset_index(drop=True)
+
+    # Добавляем колонку №, Use, служебные поля
+    df.insert(0, "No", range(1, len(df) + 1))
+    df.insert(1, "Use", True)
+    df["Edge %"] = (df["edge"] * 100).round(1)
+    df["Stake €"] = 0
+    df["Flag"] = df["flag_url"]
+    df = df.rename(columns={
+        "date":    "Date", "time":    "Time",
+        "league":  "League", "match":  "Match",
+        "pick_ru": "Pick",   "k_dec":   "Min Odds"
+    })
+    view = df[["No", "Use", "Date", "Time", "Flag", "League", "Match", "Pick", "Min Odds", "Edge %", "Stake €"]]
+
+    # Плейсхолдеры: один для метрик, второй для таблицы (редактора и результата)
+    metrics_ph = st.empty()
+    table_ph   = st.empty()
+
+    # Редактируемый DataFrame
+    edited = table_ph.data_editor(
+        view,
+        hide_index=True,
+        column_config={
+            "No":      st.column_config.NumberColumn("№", format="%d", disabled=True),
+            "Use":     st.column_config.CheckboxColumn(),
+            "Flag":    st.column_config.ImageColumn("", width="small"),
+            "Edge %":  st.column_config.NumberColumn(format="%.1f %"),
+            "Stake €": st.column_config.NumberColumn(format="%d"),
+        },
+        use_container_width=True,
+    )
+
+    # По нажатию «Рассчитать» — показываем метрики над таблицей и саму таблицу
+    if btn_calc:
+        mask = edited["Use"].tolist()
+        kept = [o for o, u in zip(outs, mask) if u]
+
+        if not kept:
+            st.warning("Нечего рассчитывать — ни одна строка не отмечена.")
+        else:
+            # Аллокация банка
+            allocate_bank(kept, bank)
+
+            # Формируем итоговый DataFrame с нумерацией
+            rows = []
+            for o in kept:
+                rows.append({
+                    "Date":     o.date,
+                    "Time":     o.time,
+                    "Flag":     o.flag_url,
+                    "League":   o.league,
+                    "Match":    o.match,
+                    "Pick":     o.pick_ru.replace("Победа хозяев", "Хозяева")
+                                      .replace("Победа гостей", "Гости"),
+                    "Min Odds": o.k_dec,
+                    "Edge %":   f"{o.edge*100:.1f} %",
+                    "Stake €":  int(round(o.stake_eur))
+                })
+            res_df = pd.DataFrame(rows)
+            res_df.insert(0, "No", range(1, len(res_df) + 1))
+
+            # Метрики над таблицей, выравнивание под нужными столбцами
+            n_cols = len(res_df.columns)
+            cols = metrics_ph.columns(n_cols)
+            idx_min = res_df.columns.get_loc("Min Odds")
+            idx_edge = res_df.columns.get_loc("Edge %")
+            idx_stk  = res_df.columns.get_loc("Stake €")
+            cols[idx_min].metric("⌀ Min Odds", f"{res_df['Min Odds'].mean():.2f}")
+            avg_edge = res_df["Edge %"].str.rstrip(" %").astype(float).mean()
+            cols[idx_edge].metric("⌀ Edge %", f"{avg_edge:.1f} %")
+            cols[idx_stk].metric("Σ Stake €", f"{res_df['Stake €'].sum()}")
+
+            # И сам итоговый DataFrame вместо редактора
+            table_ph.dataframe(
+                res_df,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Flag":    st.column_config.ImageColumn("", width="small"),
+                    "Stake €": st.column_config.NumberColumn(format="%d"),
+                },
+            )
+
+-----  end content  -----
+
+[DIR ] betai
+[FILE] betai\__init__.py (0 KB)
+----- begin content -----
+# пустой: просто помечает каталог как пакет
+
+-----  end content  -----
+
+[FILE] betai\api.py (4 KB)
+----- begin content -----
+"""
+Тонкая обёртка над API-Football v3 + файл-кеш SQLite.
+"""
+
+from __future__ import annotations
+import os
+import time
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict
+
+import requests
+from dotenv import load_dotenv
+from sqlitedict import SqliteDict
+
+# ---------------------------------------------------------------------
+# конфигурация
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+CACHE_FILE = os.path.join(ROOT, "apifootball_cache.sqlite")
+
+load_dotenv()
+API_KEY = os.getenv("APIFOOTBALL_KEY")
+if not API_KEY:
+    raise RuntimeError("API key is required – create .env with APIFOOTBALL_KEY=...")
+
+BASE_URL = "https://v3.football.api-sports.io"
+HEADERS = {"x-apisports-key": API_KEY}
+
+# TTL кеша (сек) для разных эндпоинтов
+TTL = {
+    "fixtures":    6 * 3600,      # фикстуры обновляются раз в 6 ч
+    "odds":        6 * 3600,
+    "predictions": 6 * 3600,
+}
+
+# ---------------------------------------------------------------------
+# внутренний доступ к кешу HTTP-ответов
+
+_cache = SqliteDict(CACHE_FILE, autocommit=True)
+
+
+def _cache_key(path: str, params: Dict[str, Any]) -> str:
+    return f"{path}:" + "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+
+
+def _get(path: str, params: Dict[str, Any], ttl: int) -> Any:
+    key = _cache_key(path, params)
+    now = time.time()
+    if key in _cache:
+        ts, data = _cache[key]
+        if now - ts < ttl:
+            return data
+    resp = requests.get(f"{BASE_URL}/{path}", headers=HEADERS, params=params, timeout=20)
+    resp.raise_for_status()
+    data = resp.json()
+    _cache[key] = (now, data)
+    return data
+
+
+# ---------------------------------------------------------------------
+# публичные функции API-Football
+
+def get_fixtures(date: datetime) -> Dict[str, Any]:
+    """Фикстуры на указанную дату (UTC)."""
+    return _get(
+        "fixtures",
+        {"date": date.strftime("%Y-%m-%d"), "timezone": "UTC"},
+        TTL["fixtures"],
+    )
+
+
+def get_odds(fixture_id: int) -> Dict[str, Any]:
+    """Коэффициенты для конкретного матча."""
+    return _get(
+        "odds",
+        {"fixture": fixture_id},
+        TTL["odds"],
+    )
+
+
+def get_predictions(fixture_id: int) -> Dict[str, Any]:
+    """Predictions-эндпоинт API-Football."""
+    return _get(
+        "predictions",
+        {"fixture": fixture_id},
+        TTL["predictions"],
+    )
+
+
+# ---------------------------------------------------------------------
+# Fast-Screen: кэш Elo и получение формы команды
+
+# инициализируем SQLite для кэша Elo
+DB_PATH = os.getenv("BETAI_DB", os.path.join(ROOT, "betai_cache.db"))
+_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+_cur = _conn.cursor()
+_cur.execute("""
+CREATE TABLE IF NOT EXISTS elo_daily (
+    date TEXT,
+    team_id INTEGER,
+    elo REAL,
+    PRIMARY KEY (date, team_id)
+)
+""")
+_conn.commit()
+
+
+def get_team_form(team_id: int, last_n: int = 10) -> list[dict[str, Any]]:
+    """
+    Возвращает список последних N матчей команды с базовыми метриками,
+    чтобы оценить data_completeness.
+    """
+    data = _get(
+        "fixtures",
+        {"team": team_id, "last": last_n, "timezone": "UTC"},
+        TTL["fixtures"],
+    ).get("response", [])
+    return data
+
+
+def load_elo(team_id: int, date_str: str) -> float | None:
+    """
+    Загружает из кэша Elo команды на заданную дату (YYYY-MM-DD).
+    """
+    _cur.execute(
+        "SELECT elo FROM elo_daily WHERE team_id = ? AND date = ?",
+        (team_id, date_str),
+    )
+    row = _cur.fetchone()
+    return row[0] if row else None
+
+
+def save_elo(team_id: int, date_str: str, elo: float) -> None:
+    """
+    Сохраняет/обновляет Elo команды на заданную дату в кэше.
+    """
+    _cur.execute(
+        "REPLACE INTO elo_daily (date, team_id, elo) VALUES (?, ?, ?)",
+        (date_str, team_id, elo),
+    )
+    _conn.commit()
+
+-----  end content  -----
+
+[FILE] betai\constants.py (0 KB)
+----- begin content -----
+"""Static constants: league white‑list, markets, etc."""
+
+# Top‑10 европейских дивизионов (id API‑Football v3)
+TOP_LEAGUES = {
+    39,   # EPL Англия
+    140,  # Ла Лига Испания
+    135,  # Серия A Италия
+    78,   # Бундеслига Германия
+    61,   # Лига 1 Франция
+    88,   # Эредивизи Нидерланды
+    94,   # Примейра Португалия
+    253,  # Премьер‑лига Россия
+    203,  # Бельгия Jupiler
+    2,    # Лига Чемпионов UEFA – вынесен как маркер топ‑уровня
+}
+
+EDGE_DEFAULT = 0.05  # 5 %
+-----  end content  -----
+
+[FILE] betai\markets_ru.py (0 KB)
+----- begin content -----
+"""
+Словарь переводов кодов API-Football → человекочитаемые названия на русском.
+"""
+
+from __future__ import annotations
+
+# базовые рынки --------------------------------------------------------
+
+MATCH_WINNER = {
+    "Home": "Хозяев",
+    "Draw": "Ничья",
+    "Away": "Гости",
+}
+
+OVER_UNDER_PICK = {
+    "Over": "Больше",
+    "Under": "Меньше",
+}
+
+# динамически формируемые названия ------------------------------------
+
+def ru_total(line: float, side: str) -> str:
+    return f"Тотал {OVER_UNDER_PICK[side]} {line:.1f}"
+
+def ru_ah(line: float, side: str) -> str:
+    sign = "−" if side == "Home" else "+"
+    team = "хозяев" if side == "Home" else "гостей"
+    return f"Фора ({sign}{abs(line):.1f}) {team}"
+-----  end content  -----
+
+[FILE] betai\models.py (4 KB)
+----- begin content -----
+"""
+Формулы Edge, Kelly, масштаб '5% × N', лимиты ≤10% / матч≤30%,
+а также Fast-Screen: quick_prob, value_approx, калибровка и shrinkage.
+"""
+
+from __future__ import annotations
+from typing import List
+import math
+
+from pydantic import BaseModel, Field
+
+# Параметры банк-менеджмента
+EDGE_MIN = 0.05
+BANK_PORTFOLIO = 0.05      # 5 % на портфель
+
+# Настройки shrinkage (взвешивание модели и рынка)
+SHRINKAGE_ALPHA = 0.7  # вес модели
+SHRINKAGE_BETA = 0.3   # вес рынка
+
+
+class Outcome(BaseModel):
+    fixture_id: int
+    date: str      # ISO 8601 MSK
+    time: str      # HH:MM MSK
+    league: str
+    match: str
+    market: str
+    pick_ru: str
+    line: float | None
+    k_dec: float
+    p_model: float
+    flag_url: str = ""         # URL флага или логотипа лиги
+
+    # расчётные поля
+    edge: float = Field(0, ge=-1)
+    f_raw: float = 0
+    f_final: float = 0
+    stake_eur: float = 0
+
+    def compute_edge(self) -> None:
+        """Стандартный расчёт edge и raw Kelly."""
+        p_book = 1 / self.k_dec
+        self.edge = self.p_model / p_book - 1
+        if self.edge > 0:
+            self.f_raw = self.edge / (self.k_dec - 1)
+        else:
+            self.f_raw = 0
+
+
+def allocate_bank(outs: List[Outcome], bank: float) -> None:
+    """масштабируем Kelly под фикс-total-risk и лимиты."""
+    value_outs = [o for o in outs if o.f_raw > 0]
+    if not value_outs:
+        return
+    # цель по риску: 5% на каждое value
+    F_target = BANK_PORTFOLIO * len(value_outs)
+    F_raw_sum = sum(o.f_raw for o in value_outs)
+    scale = F_target / F_raw_sum if F_raw_sum else 0
+
+    # первый проход: лимит 10% на исход
+    for o in value_outs:
+        o.f_final = min(o.f_raw * scale, 0.10)
+
+    # второй проход: лимит 30% на весь матч
+    by_fixture: dict[int, List[Outcome]] = {}
+    for o in value_outs:
+        by_fixture.setdefault(o.fixture_id, []).append(o)
+    for fixture_outs in by_fixture.values():
+        total = sum(o.f_final for o in fixture_outs)
+        if total > 0.30:
+            k = 0.30 / total
+            for o in fixture_outs:
+                o.f_final *= k
+
+    # итоговые ставки в €
+    for o in value_outs:
+        o.stake_eur = round(bank * o.f_final, 2)
+
+
+# -----------------------------------------------------------------------------
+# Fast-Screen: быстрые оценки p_est и грубый value
+
+def quick_prob(
+    elo_home: float,
+    elo_away: float,
+    hfa: float = 0.0,
+) -> tuple[float, float, float]:
+    """
+    Быстрая оценка вероятностей (без Poisson):
+      ΔElo = elo_home + hfa – elo_away
+      p_home = 1 / (1 + 10^(–ΔElo/400))
+      p_draw ≈ 0.24 · exp(–|ΔElo| / 600)
+      p_away = 1 – p_home – p_draw
+    Возвращает (p_home, p_draw, p_away).
+    """
+    d_elo = elo_home + hfa - elo_away
+    p_home = 1.0 / (1.0 + 10 ** (-d_elo / 400.0))
+    p_draw = 0.24 * math.exp(-abs(d_elo) / 600.0)
+    # гарантируем, что сумма = 1
+    p_away = max(0.0, 1.0 - p_home - p_draw)
+    return p_home, p_draw, p_away
+
+
+def value_approx(
+    p_est: float,
+    k_mean: float
+) -> float:
+    """
+    Грубая оценка value для рынка:
+      value_approx = p_est * k_mean
+    """
+    return p_est * k_mean
+
+
+# -----------------------------------------------------------------------------
+# Калибровка и Shrinkage (место для будущей доработки)
+
+def calibrate_platt(
+    logits: List[float],
+    labels: List[int],
+) -> tuple[float, float]:
+    """
+    Задача: обучить Platt-сигмоиду:
+      p_cal = 1 / (1 + exp(A·logit + B))
+    Возвращает параметры (A, B).
+    Пока заглушка — возвращаем (1, 0), то есть p_cal = sigmoid(logit).
+    """
+    # TODO: реализовать обучение на rolling-окне
+    return 1.0, 0.0
+
+
+def apply_shrinkage(
+    p_model: float,
+    k_mean: float
+) -> float:
+    """
+    Shrinkage: объединяем модель и среднюю линию рынка
+      p_market = 1 / k_mean
+      p_final = α·p_model + β·p_market
+    """
+    p_market = 1.0 / k_mean if k_mean > 0 else 0.0
+    return SHRINKAGE_ALPHA * p_model + SHRINKAGE_BETA * p_market
+
+-----  end content  -----
+
+[FILE] betai\odds_parser.py (1 KB)
+----- begin content -----
+from __future__ import annotations
+from typing import Dict, List
+from .markets_ru import MATCH_WINNER, ru_total, ru_ah
+
+def parse_odds(data: Dict) -> List[Dict]:
+    res: List[Dict] = []
+    bk = data["response"][0]["bookmakers"] if data["response"] else []
+    if not bk:
+        return res
+
+    for bet in bk[0]["bets"]:
+        name = bet["name"]
+
+        if name == "Match Winner":
+            for v in bet["values"]:
+                side = v["value"]  # Home / Draw / Away
+                res.append(
+                    dict(
+                        market="1X2",
+                        pick_ru=MATCH_WINNER[side],
+                        line=None,
+                        side=side,
+                        k_dec=float(v["odd"]),
+                    )
+                )
+
+        elif name == "Goals":
+            for v in bet["values"]:
+                side, line = v["value"].split(" ")
+                res.append(
+                    dict(
+                        market="Total",
+                        pick_ru=ru_total(float(line), side),
+                        line=float(line),
+                        side=side,
+                        k_dec=float(v["odd"]),
+                    )
+                )
+
+        elif name == "Asian Handicap":
+            for v in bet["values"]:
+                side, raw_line = v["value"].split(" ")
+                res.append(
+                    dict(
+                        market="AH",
+                        pick_ru=ru_ah(float(raw_line), side),
+                        line=float(raw_line),
+                        side=side,
+                        k_dec=float(v["odd"]),
+                    )
+                )
+    return res
+
+-----  end content  -----
+
+[FILE] betai\pipelines.py (7 KB)
+----- begin content -----
+# betai/pipelines.py
+
+"""
+Сбор данных: fixtures → Fast-Screen → detailed_analysis → Outcome[] → allocate_bank.
+"""
+
+from __future__ import annotations
+from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Any
+import pytz
+from tqdm import tqdm
+
+from .api import get_fixtures, get_odds, get_predictions, get_team_form, load_elo, save_elo
+from .odds_parser import parse_odds
+from .pred_parser import parse_predictions
+from .models import (
+    Outcome,
+    allocate_bank,
+    quick_prob,
+    value_approx,
+    apply_shrinkage,
+)
+
+MSK = pytz.timezone("Europe/Moscow")
+
+# Таблица ТОП-лиг (по рейтингу API-Football)
+LEAGUE_RANKING = [
+    39, 140, 135, 78, 61,
+    2, 3, 848, 94, 88,
+    203, 78, 253, 262, 71,
+    179, 180, 3, 848, 268,
+    322, 571, 129, 63,
+    384, 301, 98, 81,
+]
+
+
+def quick_screen(
+    days: int,
+    top_n: int,
+    completeness_thresh: float = 0.8,
+    value_thresh: float = 0.95,
+    p_min: float = 0.25,
+    p_max: float = 0.75,
+    max_events: int = 30,
+    hfa: float = 60.0,
+) -> List[Dict[str, Any]]:
+    """
+    Fast-Screen:
+    1. Фильтрация лиг и дат
+    2. Проверка completeness: у каждой команды ≥10 матчей, заполненность ≥ completeness_thresh
+    3. Быстрый расчёт p_est по Elo и HFA
+    4. Грубый value_approx = p_est * k_mean, фильтр по value_thresh и [p_min, p_max]
+    5. Сортировка по убыванию value_approx, top max_events
+    Возвращает список словарей с нужными полями для detailed_analysis.
+    """
+    today_utc = datetime.now(timezone.utc).date()
+    candidates: List[Dict[str, Any]] = []
+
+    allowed_leagues = set(LEAGUE_RANKING[:top_n])
+    cutoff = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    for d in range(days):
+        day = today_utc + timedelta(days=d)
+        fixtures = get_fixtures(day).get("response", [])
+
+        for f in fixtures:
+            lid = f["league"]["id"]
+            if lid not in allowed_leagues:
+                continue
+
+            ts = datetime.fromtimestamp(f["fixture"]["timestamp"], tz=timezone.utc)
+            if ts <= cutoff:
+                continue
+
+            home = f["teams"]["home"]["id"]
+            away = f["teams"]["away"]["id"]
+
+            # Проверяем completeness данных по командам
+            home_form = get_team_form(home, last_n=10)
+            away_form = get_team_form(away, last_n=10)
+            if len(home_form) < 10 or len(away_form) < 10:
+                continue
+            # TODO: проверка фактического заполнения полей ≥ completeness_thresh
+
+            # Загружаем/вычисляем Elo на текущую дату
+            date_str = day.isoformat()
+            eh = load_elo(home, date_str) or 1500.0
+            ea = load_elo(away, date_str) or 1500.0
+
+            # Быстрый p_est
+            p_h, p_d, p_a = quick_prob(eh, ea, hfa)
+
+            # Сбор средней линии 1X2
+            odds = get_odds(f["fixture"]["id"]).get("response", [])
+            # возьмём только рынок Match Winner, первую книгу
+            bk = odds[0]["bookmakers"][0]["bets"] if odds and odds[0]["bookmakers"] else []
+            k_list = []
+            for bet in bk:
+                if bet["name"] == "Match Winner":
+                    k_list = [float(v["odd"]) for v in bet["values"]]
+                    break
+            if len(k_list) < 2:
+                continue
+            k_mean = sum(k_list[:2]) / 2  # Home vs Away
+
+            # Грубый value для Home и Away (игнорируем ничью)
+            for side, p_est in (("Home", p_h), ("Away", p_a)):
+                val = value_approx(p_est, k_mean)
+                if val >= value_thresh and p_min <= p_est <= p_max:
+                    candidates.append({
+                        **f,
+                        "side": side,
+                        "p_est": p_est,
+                        "k_mean": k_mean,
+                        "value_approx": val,
+                    })
+
+    # Сортируем и берём топ
+    candidates.sort(key=lambda x: x["value_approx"], reverse=True)
+    return candidates[:max_events]
+
+
+def detailed_analysis(
+    candidates: List[Dict[str, Any]],
+    edge_min: float,
+) -> List[Outcome]:
+    """
+    Для каждого кандидата:
+    1. Парсим полные odds и predictions
+    2. Получаем точный p_model, применяем shrinkage
+    3. Создаём Outcome, считаем edge
+    4. Фильтруем по edge_min
+    """
+    outcomes: List[Outcome] = []
+    for c in tqdm(candidates, desc="detailed analysis", leave=False):
+        fid = c["fixture"]["fixture"]["id"]
+        dt_utc = datetime.fromtimestamp(c["fixture"]["timestamp"], tz=timezone.utc)
+        dt_msk = dt_utc.astimezone(MSK)
+
+        odds_json = get_odds(fid)
+        preds_json = get_predictions(fid)
+        preds = parse_predictions(preds_json)
+
+        for o in parse_odds(odds_json):
+            # точный p_model
+            pm = (
+                preds.get(o["market"], {})
+                     .get(o["line"], {})
+                     .get(o["side"], None)
+            )
+            if pm is None:
+                continue
+
+            # применяем shrinkage
+            p_final = apply_shrinkage(pm, c["k_mean"])
+
+            out = Outcome(
+                fixture_id=fid,
+                date=dt_msk.strftime("%Y-%m-%d"),
+                time=dt_msk.strftime("%H:%M"),
+                league=c["league"]["name"],
+                match=c["teams"]["home"]["name"] + " – " + c["teams"]["away"]["name"],
+                market=o["market"],
+                pick_ru=o["pick_ru"],
+                line=o["line"],
+                k_dec=o["k_dec"],
+                p_model=p_final,
+                flag_url=c["league"].get("flag") or c["league"].get("logo", ""),
+            )
+            out.compute_edge()
+            if out.edge >= edge_min:
+                outcomes.append(out)
+
+    return outcomes
+
+
+def scan_days(days: int, edge_min: float, top_n: int) -> List[Outcome]:
+    """
+    Объединяем fast-screen и detailed-analysis:
+      1) quick_screen → кандидаты
+      2) detailed_analysis → точные Outcome
+    """
+    cand = quick_screen(days, top_n)
+    detailed = detailed_analysis(cand, edge_min)
+    return detailed
+
+
+def full_pipeline(
+    days: int,
+    edge_min: float,
+    bank: float,
+    top_n: int,
+) -> List[Outcome]:
+    """
+    Полный конвейер: scan_days → allocate_bank → сортировка финальных ставок.
+    """
+    outs = scan_days(days, edge_min, top_n)
+    allocate_bank(outs, bank)
+    # только положительные ставки
+    outs = [o for o in outs if o.stake_eur > 0]
+    # сортировка: по убыванию edge, затем по дате/времени
+    outs.sort(key=lambda x: (-x.edge, x.date, x.time))
+    return outs
+
+-----  end content  -----
+
+[FILE] betai\pred_parser.py (1 KB)
+----- begin content -----
+# betai/pred_parser.py
+
+"""
+Парсинг /predictions – достаём вероятности модели для 1X2,
+основанные на поле predictions.percent из API-Football.
+"""
+
+from __future__ import annotations
+from typing import Dict
+
+def parse_predictions(data: Dict) -> Dict:
+    """
+    Возвращает словарь вида:
+    {
+      '1X2': {'Home': 0.50, 'Draw': 0.50, 'Away': 0.00},
+      'Total': {},  # нет прогнозов в этом эндпоинте
+      'AH': {},     # нет прогнозов в этом эндпоинте
+    }
+    """
+    resp = data.get("response")
+    if not resp:
+        return {"1X2": {}, "Total": {}, "AH": {}}
+
+    pr = resp[0].get("predictions", {})
+    pct = pr.get("percent", {})
+
+    # percent хранит строки вроде "50%", "0%", "25%"
+    try:
+        home = float(pct.get("home", "0%").strip("%")) / 100
+        draw = float(pct.get("draw", "0%").strip("%")) / 100
+        away = float(pct.get("away", "0%").strip("%")) / 100
+    except Exception:
+        home = draw = away = 0.0
+
+    return {
+        "1X2": {"Home": home, "Draw": draw, "Away": away},
+        "Total": {},  # пока нет прогноза
+        "AH": {},     # пока нет прогноза
+    }
+
+-----  end content  -----
+
+[DIR ] betai.egg-info
+[FILE] betai.egg-info\dependency_links.txt (0 KB)
+----- begin content -----
+
+
+-----  end content  -----
+
+[FILE] betai.egg-info\PKG-INFO (0 KB)
+----- begin content -----
+Metadata-Version: 2.4
+Name: betai
+Version: 0.1.0
+Requires-Dist: requests
+Requires-Dist: sqlitedict
+Requires-Dist: pydantic
+Requires-Dist: python-dotenv
+Requires-Dist: streamlit
+Requires-Dist: pytz
+Dynamic: requires-dist
+
+-----  end content  -----
+
+[FILE] betai.egg-info\requires.txt (0 KB)
+----- begin content -----
+requests
+sqlitedict
+pydantic
+python-dotenv
+streamlit
+pytz
+
+-----  end content  -----
+
+[FILE] betai.egg-info\SOURCES.txt (0 KB)
+----- begin content -----
+setup.py
+betai/__init__.py
+betai/api.py
+betai/constants.py
+betai/markets_ru.py
+betai/models.py
+betai/odds_parser.py
+betai/pipelines.py
+betai/pred_parser.py
+betai.egg-info/PKG-INFO
+betai.egg-info/SOURCES.txt
+betai.egg-info/dependency_links.txt
+betai.egg-info/requires.txt
+betai.egg-info/top_level.txt
+tests/test_kelly.py
+tests/test_pipelines.py
+-----  end content  -----
+
+[FILE] betai.egg-info\top_level.txt (0 KB)
+----- begin content -----
+betai
+
+-----  end content  -----
+
+[FILE] inspect_preds.py (1 KB)
+----- begin content -----
+# inspect_preds.py
+import os
+import json
+from datetime import datetime, timezone
+from dotenv import load_dotenv
+
+# ваш модуль API
+from betai.api import get_fixtures, get_predictions
+
+# загружаем .env
+load_dotenv()
+
+def main():
+    # 1) Укажите дату, за которую хотим глянуть первый матч
+    #    Формат YYYY, M, D — сегодня:
+    today = datetime.now(timezone.utc).date()
+    
+    # 2) Получаем список матчей на сегодня
+    fixtures = get_fixtures(today)["response"]
+    if not fixtures:
+        print("❌ Нет матчей на сегодня в топ-лигах.")
+        return
+    
+    # 3) Изберём первый попавшийся матч из топ-лиг (ID из TOP_LEAGUES)
+    #    Здесь трудно знать заранее, какие лиги придут, поэтому просто берём первый:
+    fx = fixtures[0]
+    fixture_id = fx["fixture"]["id"]
+    print(f"У inspect_preds.py первый матч fixture_id = {fixture_id}")
+    
+    # 4) Забираем predictions
+    preds = get_predictions(fixture_id)
+    
+    # 5) Сохраняем в файл / печатаем в консоль отформатированно
+    print(json.dumps(preds, indent=2, ensure_ascii=False))
+
+if __name__ == "__main__":
+    main()
+
+-----  end content  -----
+
+[FILE] pytest.ini (0 KB)
+----- begin content -----
+[pytest]
+python_paths = .
+
+-----  end content  -----
+
+[FILE] requirements.txt (0 KB)
+----- begin content -----
+streamlit>=1.34
+pandas>=2.2
+requests>=2.32
+python-dotenv>=1.0
+pydantic>=2.7
+sqlitedict>=2.1
+tqdm>=4.66          # прогресс-бар в тер-логе
+-----  end content  -----
+
+[FILE] setup.py (0 KB)
+----- begin content -----
+
+from setuptools import setup, find_packages
+
+setup(
+    name="betai",
+    version="0.1.0",
+    packages=find_packages(),
+    install_requires=[
+        # сюда все ваши зависимости, например:
+        "requests",
+        "sqlitedict",
+        "pydantic",
+        "python-dotenv",
+        "streamlit",
+        "pytz",
+    ],
+)
+
+-----  end content  -----
+
+[FILE] snapshot.py (3 KB)
+----- begin content -----
+#!/usr/bin/env python3
+"""
+Создание компактного текстового снапшота проекта.
+Исключает бинарники и большие файлы (включая JSON-дампы).
+"""
+
+from pathlib import Path
+from datetime import datetime
+
+# === Настройка ===
+PROJECT_DIR   = Path(r"C:\Code Projects\Bet_AI_pythone")  # ваш проект
+SNAP_DIR      = PROJECT_DIR / "snapshots"
+MAX_SNAPS     = 5
+MAX_INLINE_KB = 200  # порог для встраивания содержимого
+
+# Директории и файлы, которые не нужно обрабатывать
+EXCLUDE_DIRS   = {".venv", "snapshots", "__pycache__", ".git", ".streamlit"}
+EXCLUDE_NAMES  = {".env", "secrets.toml"}
+
+# Расширения, которые считаются «бинарными» и полностью пропускаются
+BINARY_EXTS = {
+    ".sqlite", ".db", ".log",
+    ".png", ".jpg", ".jpeg", ".gif",
+    ".bin", ".exe", ".pkl",
+    ".json"    # теперь исключаем и JSON-файлы
+}
+
+# Создадим папку для снапшотов, если её нет
+SNAP_DIR.mkdir(exist_ok=True)
+
+# Имя нового снапшота
+timestamp     = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+snapshot_file = SNAP_DIR / f"snapshot_{timestamp}.txt"
+
+
+def should_skip(path: Path) -> bool:
+    """
+    Возвращает True, если данный путь нужно полностью пропустить.
+    """
+    # по части пути (директория)
+    if any(part in EXCLUDE_DIRS for part in path.parts):
+        return True
+    # по точному имени
+    if path.name in EXCLUDE_NAMES:
+        return True
+    # по расширению
+    if path.suffix.lower() in BINARY_EXTS:
+        return True
+    return False
+
+
+def create_snapshot():
+    with snapshot_file.open("w", encoding="utf-8") as out:
+        out.write(f"=== Snapshot of {PROJECT_DIR} at {datetime.now()} ===\n\n")
+
+        for p in sorted(PROJECT_DIR.rglob("*")):
+            rel = p.relative_to(PROJECT_DIR)
+            if should_skip(p):
+                continue
+
+            if p.is_dir():
+                out.write(f"[DIR ] {rel}\n")
+            else:
+                size_kb = p.stat().st_size // 1024
+                out.write(f"[FILE] {rel} ({size_kb} KB)\n")
+
+                # Если файл слишком большой — не встраиваем содержимое
+                if size_kb > MAX_INLINE_KB:
+                    out.write(f"  # skipped content ({size_kb} KB > {MAX_INLINE_KB} KB)\n\n")
+                    continue
+
+                # Встроим текстовый файл
+                try:
+                    text = p.read_text(encoding="utf-8", errors="replace")
+                except Exception as e:
+                    out.write(f"  # unable to read file: {e}\n\n")
+                    continue
+
+                out.write("----- begin content -----\n")
+                out.write(text)
+                out.write("\n-----  end content  -----\n\n")
+
+        out.write("=== End of snapshot ===\n")
+
+    print(f"✅ Snapshot saved to: {snapshot_file}")
+
+
+def prune_old_snapshots():
+    snaps = sorted(
+        SNAP_DIR.glob("snapshot_*.txt"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True
+    )
+    for old in snaps[MAX_SNAPS:]:
+        try:
+            old.unlink()
+            print(f"🗑 Removed old snapshot: {old.name}")
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    create_snapshot()
+    prune_old_snapshots()
+
+-----  end content  -----
+
+[DIR ] tests
+[FILE] tests\test_kelly.py (0 KB)
+----- begin content -----
+from betai.models import Outcome, allocate_bank
+
+def test_kelly_example():
+    bank = 1000
+    outs = [
+        Outcome(fixture_id=1, date="", time="", league="", match="",
+                market="1X2", pick_ru="", line=None,
+                k_dec=2.10, p_model=0.540),
+        Outcome(fixture_id=2, date="", time="", league="", match="",
+                market="1X2", pick_ru="", line=None,
+                k_dec=1.95, p_model=0.560),
+        Outcome(fixture_id=3, date="", time="", league="", match="",
+                market="1X2", pick_ru="", line=None,
+                k_dec=3.60, p_model=0.310),
+    ]
+    for o in outs:
+        o.compute_edge()
+    allocate_bank(outs, bank)
+    stakes = [o.stake_eur for o in outs]
+    assert sum(stakes) == 150      # 15 % банка
+
+-----  end content  -----
+
+[FILE] tests\test_pipelines.py (3 KB)
+----- begin content -----
+import pytest
+from datetime import datetime, timezone
+from betai.models import quick_prob, value_approx
+from betai.pipelines import quick_screen, detailed_analysis
+from betai.api import save_elo, load_elo
+
+# Fixtures for Elo caching
+def test_elo_cache(tmp_path, monkeypatch):
+    # Setup a temporary DB file
+    db_file = tmp_path / "test_elo.db"
+    monkeypatch.setenv("BETAI_DB", str(db_file))
+    # Ensure load returns None then save and load returns value
+    team_id = 1
+    date_str = "2025-05-20"
+    assert load_elo(team_id, date_str) is None
+    save_elo(team_id, date_str, 1550.0)
+    assert load_elo(team_id, date_str) == pytest.approx(1550.0)
+
+# Tests for quick_prob and value_approx
+def test_quick_prob_symmetry():
+    # If elo_home == elo_away, p_home ≈ p_away and p_draw > 0
+    p_h, p_d, p_a = quick_prob(1500, 1500)
+    assert pytest.approx(p_h, rel=1e-2) == 0.5
+    assert p_d > 0
+    assert pytest.approx(p_h + p_d + p_a, rel=1e-6) == 1.0
+
+
+def test_quick_prob_elo_difference():
+    # Higher home elo yields p_h > 0.5
+    p_h, p_d, p_a = quick_prob(1600, 1400)
+    assert p_h > 0.5
+    assert p_a < 0.5
+
+
+def test_value_approx():
+    assert value_approx(0.6, 2.0) == pytest.approx(1.2)
+
+# Mocks for pipelines
+class DummyFixture:
+    def __init__(self):
+        self.response = []
+
+def test_quick_screen_filters(monkeypatch):
+    # Monkeypatch get_fixtures to return controlled data
+    from betai.pipelines import get_fixtures, get_odds, get_team_form
+
+    fixtures_data = {
+        "response": [
+            {
+                "league": {"id": 39, "name": "League A", "flag": ""},
+                "fixture": {"id": 100, "timestamp": int(datetime.now(timezone.utc).timestamp()) + 3600},
+                "teams": {"home": {"id": 10}, "away": {"id": 20}},
+            }
+        ]
+    }
+    monkeypatch.setattr("betai.pipelines.get_fixtures", lambda d: fixtures_data)
+    monkeypatch.setattr("betai.pipelines.get_team_form", lambda team_id, last_n: [{}] * 10)
+    # Patch odds: home odd=2.0, away=3.0
+    odds_resp = {"response": [{"bookmakers": [{"bets": [{"name": "Match Winner", "values": [{"odd": 2.0}, {"odd": 3.0}]}]}]}]}
+    monkeypatch.setattr("betai.pipelines.get_odds", lambda fid: odds_resp)
+    # Run quick_screen
+    candidates = quick_screen(days=1, top_n=1, completeness_thresh=0.8, value_thresh=0.0, p_min=0.0, p_max=1.0)
+    assert len(candidates) == 2  # Home and Away should pass
+
+def test_detailed_analysis_integration(monkeypatch):
+    # Setup a dummy candidate
+    candidate = {
+        "league": {"name": "League A", "flag": ""},
+        "fixture": {"id": 200, "timestamp": int(datetime.now(timezone.utc).timestamp()) + 7200},
+        "teams": {"home": {"name": "Team H", "id": 10}, "away": {"name": "Team A", "id": 20}},
+        "side": "Home",
+        "k_mean": 2.0,
+    }
+    # Patch get_odds and get_predictions
+    parse_odds = lambda _: [{"market": "1X2", "line": None, "pick_ru": "Home", "k_dec": 2.0, "side": "Home"}]
+    parse_preds = lambda _: {"1X2": {None: {"Home": 0.6}}}
+    monkeypatch.setattr("betai.pipelines.parse_odds", parse_odds)
+    monkeypatch.setattr("betai.pipelines.parse_predictions", parse_preds)
+    monkeypatch.setattr("betai.pipelines.get_odds", lambda fid: {})
+    monkeypatch.setattr("betai.pipelines.get_predictions", lambda fid: {})
+
+    outcomes = detailed_analysis([candidate], edge_min=0.0)
+    assert len(outcomes) == 1
+    out = outcomes[0]
+    assert out.match == "Team H – Team A"
+    assert out.edge >= 0
+
+-----  end content  -----
+
+=== End of snapshot ===

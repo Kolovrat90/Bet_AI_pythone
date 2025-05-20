@@ -1,0 +1,16 @@
+setup.py
+betai/__init__.py
+betai/api.py
+betai/constants.py
+betai/markets_ru.py
+betai/models.py
+betai/odds_parser.py
+betai/pipelines.py
+betai/pred_parser.py
+betai.egg-info/PKG-INFO
+betai.egg-info/SOURCES.txt
+betai.egg-info/dependency_links.txt
+betai.egg-info/requires.txt
+betai.egg-info/top_level.txt
+tests/test_kelly.py
+tests/test_pipelines.py

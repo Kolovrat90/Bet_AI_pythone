@@ -1,0 +1,7 @@
+streamlit>=1.34
+pandas>=2.2
+requests>=2.32
+python-dotenv>=1.0
+pydantic>=2.7
+sqlitedict>=2.1
+tqdm>=4.66          # прогресс-бар в тер-логе

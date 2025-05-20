@@ -1,0 +1,6 @@
+requests
+sqlitedict
+pydantic
+python-dotenv
+streamlit
+pytz
