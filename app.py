@@ -57,59 +57,68 @@ if "outs_raw" in st.session_state or "candidates" in st.session_state:
     table_ph   = st.empty()
 
     if "candidates" in st.session_state:
+        # Quick-screen view
         raw = st.session_state["candidates"]
-        # build DataFrame for quick-screen candidates
         rows = []
         for f in raw:
-            # f is dict with keys: fixture, teams, league, side, p_est, k_mean, value_approx
             ts = datetime.fromtimestamp(f["fixture"]["timestamp"], tz=timezone.utc)
             rows.append({
-                "No":             None,
-                "Use":            True,
-                "Date":           ts.date().isoformat(),
-                "Time":           ts.time().strftime("%H:%M"),
-                "League":         f["league"]["name"],
-                "Match":          f["teams"]["home"]["name"] + " – " + f["teams"]["away"]["name"],
-                "Side":           f["side"],
-                "p_est":          round(f["p_est"]*100, 1),
-                "k_mean":         f["k_mean"],
-                "value_approx":   round(f["value_approx"], 3),
+                "No":           None,
+                "Use":          True,
+                "Date":         ts.date().isoformat(),
+                "Time":         ts.time().strftime("%H:%M"),
+                "League":       f["league"]["name"],
+                "Match":        f["teams"]["home"]["name"] + " – " + f["teams"]["away"]["name"],
+                "Side":         f["side"],
+                "p_est %":      round(f["p_est"]*100, 1),
+                "Avg Odds":     f["k_mean"],
+                "Value≈":       round(f["value_approx"], 3),
             })
         df = pd.DataFrame(rows)
         df["No"] = range(1, len(df)+1)
-        view = df[["No","Use","Date","Time","League","Match","Side","p_est","k_mean","value_approx"]]
+        view = df[["No","Use","Date","Time","League","Match","Side","p_est %","Avg Odds","Value≈"]]
         edited = table_ph.data_editor(
             view,
             hide_index=True,
             column_config={
-                "Use":          st.column_config.CheckboxColumn(),
-                "p_est":        st.column_config.NumberColumn("p_est %", format="%.1f %"),
-                "k_mean":       st.column_config.NumberColumn("Avg Odds", format="%.3f"),
-                "value_approx": st.column_config.NumberColumn("Value≈", format="%.3f"),
+                "Use":      st.column_config.CheckboxColumn(),
+                "p_est %":  st.column_config.NumberColumn(format="%.1f %"),
+                "Avg Odds": st.column_config.NumberColumn(format="%.3f"),
+                "Value≈":   st.column_config.NumberColumn(format="%.3f"),
             },
             use_container_width=True,
         )
         st.session_state["edited"] = ("candidates", edited)
 
     else:
-        # full-scan flow
+        # Full-scan view
         outs = st.session_state["outs_raw"]
+        # Build DataFrame from raw Outcomes
         df = pd.DataFrame(o.model_dump() for o in outs)
+        # Inject computed fields
+        df["edge"]      = [o.edge for o in outs]
+        df["stake_eur"] = [o.stake_eur for o in outs]
+
+        # Filter past matches
         now = datetime.now()
         df = df[df.apply(
             lambda r: datetime.combine(date.fromisoformat(r.date),
                                        dt_time.fromisoformat(r.time)) > now,
             axis=1
         )].reset_index(drop=True)
-        df.insert(0, "No", range(1, len(df)+1))
-        df.insert(1, "Use", True)
-        df["Edge %"] = (df["edge"]*100).round(1)
+
+        # Add numbering and initial columns
+        df.insert(0, "No",    range(1, len(df)+1))
+        df.insert(1, "Use",   True)
+        df["Edge %"] = (df["edge"] * 100).round(1)
         df["Stake €"] = 0
-        df["Flag"] = df["flag_url"]
+        df["Flag"]    = df["flag_url"]
         df = df.rename(columns={
-            "date":"Date","time":"Time","league":"League",
-            "match":"Match","pick_ru":"Pick","k_dec":"Min Odds"
+            "date":    "Date", "time":    "Time",
+            "league":  "League", "match":  "Match",
+            "pick_ru": "Pick",   "k_dec":  "Min Odds"
         })
+
         view = df[["No","Use","Date","Time","Flag","League","Match","Pick","Min Odds","Edge %","Stake €"]]
         edited = table_ph.data_editor(
             view,
@@ -131,6 +140,8 @@ if btn_calc:
         st.warning("Сначала выполните быстрый скрин или полный скан.")
     else:
         mode, edited = st.session_state["edited"]
+
+        # Determine selected items
         if mode == "candidates":
             raw = st.session_state["candidates"]
             df_ed = edited
@@ -138,13 +149,13 @@ if btn_calc:
             kept = [c for c, m in zip(raw, mask) if m]
             if not kept:
                 st.warning("Нечего рассчитывать — ни одна строка не отмечена.")
+                final = []
             else:
-                # detailed analysis + allocate
                 detailed = detailed_analysis(kept, edge_pct/100.0)
                 allocate_bank(detailed, bank)
                 final = detailed
 
-        else:  # full scan flow
+        else:  # full-scan
             raw = st.session_state["outs_raw"]
             df_ed = edited
             mask = df_ed["Use"].tolist()
@@ -156,55 +167,51 @@ if btn_calc:
                 allocate_bank(kept, bank)
                 final = kept
 
-        # display final table + expanders
+        # Display final results
         if final:
-            # metrics
-            df_fin = pd.DataFrame([{
-                "No":         i+1,
-                "Date":       o.date,
-                "Time":       o.time,
-                "League":     o.league,
-                "Match":      o.match,
-                "Pick":       o.pick_ru.replace("Победа хозяев","Хозяева")
-                                      .replace("Победа гостей","Гости"),
-                "Min Odds":   o.k_dec,
-                "Edge %":     o.edge*100,
-                "Stake €":    o.stake_eur
-            } for i, o in enumerate(final)])
-            df_fin_display = df_fin.copy()
-            df_fin_display["Edge %"] = df_fin_display["Edge %"].round(1)
-            df_fin_display.insert(0, "No", range(1, len(df_fin_display)+1))
+            # Build final DataFrame
+            rows = []
+            for i, o in enumerate(final):
+                rows.append({
+                    "No":       i+1,
+                    "Date":     o.date,
+                    "Time":     o.time,
+                    "League":   o.league,
+                    "Match":    o.match,
+                    "Pick":     o.pick_ru.replace("Победа хозяев","Хозяева")
+                                         .replace("Победа гостей","Гости"),
+                    "Min Odds": o.k_dec,
+                    "Edge %":   o.edge * 100,
+                    "Stake €":  o.stake_eur,
+                })
+            df_fin = pd.DataFrame(rows)
+            df_fin["Edge %"] = df_fin["Edge %"].round(1)
 
-            # metrics above table
-            cols = metrics_ph.columns(len(df_fin_display.columns))
-            idx_min = df_fin_display.columns.get_loc("Min Odds")
-            idx_edge = df_fin_display.columns.get_loc("Edge %")
-            idx_stk  = df_fin_display.columns.get_loc("Stake €")
-            cols[idx_min].metric("⌀ Min Odds", f"{df_fin_display['Min Odds'].mean():.2f}")
-            cols[idx_edge].metric("⌀ Edge %", f"{df_fin_display['Edge %'].mean():.1f} %")
-            cols[idx_stk].metric("Σ Stake €", f"{df_fin_display['Stake €'].sum():.0f}")
+            # Metrics above table
+            cols = metrics_ph.columns(len(df_fin.columns))
+            idx_min = df_fin.columns.get_loc("Min Odds")
+            idx_edge = df_fin.columns.get_loc("Edge %")
+            idx_stk  = df_fin.columns.get_loc("Stake €")
+            cols[idx_min].metric("⌀ Min Odds", f"{df_fin['Min Odds'].mean():.2f}")
+            cols[idx_edge].metric("⌀ Edge %", f"{df_fin['Edge %'].mean():.1f} %")
+            cols[idx_stk].metric("Σ Stake €", f"{df_fin['Stake €'].sum():.0f}")
 
-            # table
+            # Show final table
             table_ph.dataframe(
-                df_fin_display,
+                df_fin,
                 hide_index=True,
                 use_container_width=True,
-                column_config={
-                    "Stake €": st.column_config.NumberColumn(format="%d"),
-                },
+                column_config={"Stake €": st.column_config.NumberColumn(format="%d")},
             )
 
-            # expanders per outcome
+            # Expanders for each outcome
             for o in final:
                 with st.expander(f"{o.league}: {o.match} → {o.pick_ru}, Stake {o.stake_eur}€"):
-                    st.markdown("**Вероятности:**")
+                    st.markdown("**Вероятности и Kelly:**")
                     st.write({
                         "p_model": f"{o.p_model:.3f}",
                         "edge":    f"{o.edge*100:.1f}%",
                         "f_raw":   f"{o.f_raw:.3f}",
                         "f_final": f"{o.f_final:.3f}",
                     })
-                    # bar chart of probabilities if available
-                    if hasattr(o, "p_model"):
-                        st.bar_chart({"p_model": [o.p_model]})
-        # end if final
+                    st.bar_chart({"p_model": [o.p_model]})
