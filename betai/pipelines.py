@@ -170,33 +170,33 @@ def quick_screen(
 # 2. Глубокий анализ (точные вероятности + edge)
 # --------------------------------------------------------------------------------------
 
-
-def detailed_analysis(candidates: List[Dict[str, Any]], edge_min: float) -> List[Outcome]:
+def detailed_analysis(
+    candidates: List[Dict[str, Any]],
+    edge_min: float | None = None,
+) -> List[Outcome]:
     """
-    Для каждого кандидата тянем market-odds + predictions → считаем p_model, edge,
-    применяем ограничения *edge_min*. Возвращаем список Outcome.
+    Для каждого кандидата тянем market-odds + predictions → считаем p_model, edge.
+    Если *edge_min* задан и не None — отбрасываем всё ниже порога.
     """
     outs: list[Outcome] = []
 
     for c in tqdm(candidates, desc="detailed analysis", leave=False):
         fid = c["fixture"]["id"]
-        dt_utc = datetime.fromtimestamp(c["fixture"]["timestamp"], tz=timezone.utc)
+        dt_utc = datetime.fromtimestamp(
+            c["fixture"]["timestamp"], tz=timezone.utc
+        )
         dt_msk = dt_utc.astimezone(MSK)
 
         odds_json = get_odds(fid)
         preds_json = get_predictions(fid)
-
         preds = parse_predictions(preds_json)  # {market: {line: {side: p}}}
 
-        for o in parse_odds(odds_json):  # generator of dicts (market/side/line/k_dec/pick_ru)
-            # анализируем только тот side, что прошёл скрин
-            if o["side"] != c["side"]:
+        for o in parse_odds(odds_json):  # generator of dicts
+            if o["side"] != c["side"]:   # анализируем только side из скрина
                 continue
 
             # точная вероятность модели
-            p_raw = (
-                preds.get(o["market"], {}).get(o["line"], {}).get(o["side"])
-            )
+            p_raw = preds.get(o["market"], {}).get(o["line"], {}).get(o["side"])
             if p_raw is None:
                 continue
 
@@ -207,7 +207,9 @@ def detailed_analysis(candidates: List[Dict[str, Any]], edge_min: float) -> List
                 date=dt_msk.strftime("%Y-%m-%d"),
                 time=dt_msk.strftime("%H:%M"),
                 league=c["league"]["name"],
-                match=f["teams"]["home"]["name"] + " – " + f["teams"]["away"]["name"],
+                # ────── BUGFIX: было `f[...]`, стало `c[...]` ──────
+                match=c["teams"]["home"]["name"] + " – " +
+                      c["teams"]["away"]["name"],
                 market=o["market"],
                 pick_ru=o["pick_ru"],
                 line=o["line"],
@@ -216,7 +218,8 @@ def detailed_analysis(candidates: List[Dict[str, Any]], edge_min: float) -> List
                 flag_url=c["league"]["flag"],
             )
             out.compute_edge()
-            if out.edge >= edge_min:
+
+            if edge_min is None or out.edge >= edge_min:
                 outs.append(out)
 
     return outs
@@ -225,7 +228,6 @@ def detailed_analysis(candidates: List[Dict[str, Any]], edge_min: float) -> List
 # --------------------------------------------------------------------------------------
 # 3. Склейка: быстрый + глубокий
 # --------------------------------------------------------------------------------------
-
 
 def scan_days(days: int, edge_min: float, top_n: int) -> List[Outcome]:
     """
