@@ -1,4 +1,4 @@
-import os
+import os, itertools
 from datetime import datetime, timezone
 from typing import Dict, Tuple, Optional
 
@@ -6,18 +6,18 @@ import pandas as pd
 import streamlit as st
 
 from betai.pipelines import quick_screen, detailed_analysis
-from betai.models import allocate_bank, Outcome
+from betai.models import Outcome, allocate_bank
 
-# ───────────────── page / env
+# ────────── basic setup ──────────
 st.set_page_config("BetAI – Value Betting Scanner (v3)", "⚽", layout="wide")
 st.markdown("# ⚽ BetAI – Value Betting Scanner (v3)")
 
 API_KEY = st.secrets.get("APIFOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY")
 if not API_KEY:
-    st.error("Нужен APIFOOTBALL_KEY (secrets.toml или env var)")
+    st.error("Нужен APIFOOTBALL_KEY (secrets.toml или переменная окружения)")
     st.stop()
 
-# ───────────────── controls
+# ────────── controls ──────────
 c0, c1, c2 = st.columns([1, 2, 2])
 with c0:
     today_only = st.checkbox("Сегодня", True)
@@ -31,133 +31,130 @@ top_n = st.selectbox("Топ-лиг для анализа", [10, 15, 20, 25, 30]
 
 st.divider()
 
-# ───────────────── helpers
+# ────────── helpers ──────────
 def flag_or_logo(league: Dict) -> str:
-    return league.get("logo") if league["name"].startswith("UEFA") else league.get("flag", "")
+    return league.get("logo") or league.get("flag", "")
 
-def stub_from_fast(row: Dict) -> Outcome:
-    """создаём заглушку Outcome, если deep-данных нет"""
+def stub_from_fast(row: pd.Series) -> Outcome:
+    """создаём заглушку Outcome, если глубокий анализ не вернул запись"""
     return Outcome(
-        fixture_id=row["fixture"]["id"],
-        date=row["Date"],
-        time=row["Time"],
-        league=row["League"],
-        match=row["Match"],
+        fixture_id=row.fixture["id"],
+        date=row.Date,
+        time=row.Time,
+        league=row.League,
+        match=row.Match,
         market="1X2",
-        pick_ru=row["Side"],
+        pick_ru="Хозяева" if row.side == "Home" else "Гости",
         line=None,
-        k_dec=row["Avg Odds"],
-        p_model=row["p_est"]/100,
-        flag_url=row["Flag"],
+        k_dec=row.k_mean,
+        p_model=row["p_est %"]/100,
+        flag_url=row.Flag,
     )
 
-# ───────────────── кнопки
-col1, col2, col3 = st.columns(3)
-with col1:
+def key_from_row(row) -> Tuple[str, str]:
+    """единый ключ (match, side) для Series и Outcome"""
+    if isinstance(row, Outcome):
+        side = ("Хозяева" if row.pick_ru.startswith("Победа хозяев")
+                else "Гости" if row.pick_ru.startswith("Победа гостей")
+                else row.pick_ru)
+        return row.match, side
+    # pandas Series / dict
+    return row["Match"], row.get("Side") or row.get("side")
+
+# ────────── buttons ──────────
+b1, b2, b3 = st.columns(3)
+with b1:
     if st.button("⚡ 1. Быстрый скрин", use_container_width=True):
         st.session_state.clear()
         st.session_state["fast"] = quick_screen(days, top_n)
-with col2:
+with b2:
     if st.button("🔍 2. Глубокий анализ",
                  use_container_width=True,
                  disabled="fast" not in st.session_state):
         st.session_state["deep"] = detailed_analysis(st.session_state["fast"], 0.0)
-with col3:
+with b3:
     if st.button("💰 3. Рассчитать ставки",
                  use_container_width=True,
                  disabled="fast" not in st.session_state):
-        st.session_state["do_calc"] = True
+        st.session_state["want_calc"] = True
 
 st.divider()
 
-# ───────────────── таблица fast-screen
+# ────────── fast-table ──────────
 if "fast" in st.session_state:
+    # приводим fast-raw к удобному DataFrame
     rows = []
     for f in st.session_state["fast"]:
         ts = datetime.fromtimestamp(f["fixture"]["timestamp"], tz=timezone.utc)
-        league = f["league"]
         rows.append({
-            **f,  # сохраняем оригинал для stub
-            "№":    None,
-            "Use":  True,
-            "Flag": flag_or_logo(league),
-            "Date": ts.date().isoformat(),
-            "Time": ts.time().strftime("%H:%M"),
-            "League": league["name"],
-            "Match": f"{f['teams']['home']['name']} – {f['teams']['away']['name']}",
-            "p_est": round(f["p_est"]*100, 1),
-            "Value≈": round(f["value_approx"], 3),
-            "Edge %": None,
-            "Stake €": 0,
+            "fixture": f["fixture"],
+            "Flag":    flag_or_logo(f["league"]),
+            "Date":    ts.date().isoformat(),
+            "Time":    ts.time().strftime("%H:%M"),
+            "League":  f["league"]["name"],
+            "Match":   f["teams"]["home"]["name"] + " – " + f["teams"]["away"]["name"],
+            "Side":    f["side"],
+            "p_est %": round(f["p_est"]*100, 1),
+            "k_mean":  f["k_mean"],
+            "Value≈":  round(f["value_approx"], 3),
         })
     df = pd.DataFrame(rows)
-    df["№"] = range(1, len(df)+1)
+    df.insert(0, "№",  range(1, len(df)+1))
+    df.insert(2, "Use", True)
 
-    # — merge deep edge (если уже есть)
+    # сливаем результаты deep-анализа, если он уже был
     if "deep" in st.session_state:
-        def _row_key(m, side):
-            return (m, side)
+        deep_key_map = {key_from_row(o): o for o in st.session_state["deep"]}
+        edge_vals = []
+        for _, r in df.iterrows():
+            o = deep_key_map.get(key_from_row(r))
+            edge_vals.append(round(o.edge*100, 1) if o else None)
+        df["Edge %"] = edge_vals
+    else:
+        df["Edge %"] = None
 
-        deep_map: Dict[Tuple[str, str], Outcome] = {
-            _row_key(o.match,
-                     "Хозяев" if o.pick_ru.startswith("Победа хозяев") else
-                     "Гости"  if o.pick_ru.startswith("Победа гостей") else
-                     o.pick_ru): o
-            for o in st.session_state["deep"]
-        }
+    df["Stake €"] = 0            # заполняется только после allocate
 
-        for i, r in df.iterrows():
-            o = deep_map.get(_row_key(r["Match"], r["Side"]))
-            if o:
-                df.at[i, "Edge %"] = round(o.edge*100, 1)
-
+    show_cols = ["№","Use","Flag","Date","Time","League","Match","Side",
+                 "k_mean","Value≈","Edge %","Stake €"]
     edited = st.data_editor(
-        df,
+        df[show_cols],
         key="table",
         hide_index=True,
         use_container_width=True,
         column_config={
             "Use":      st.column_config.CheckboxColumn(),
             "Flag":     st.column_config.ImageColumn("", width="small"),
-            "p_est":    st.column_config.NumberColumn("p_est %", format="%.1f"),
-            "Avg Odds": st.column_config.NumberColumn(format="%.3f"),
+            "k_mean":   st.column_config.NumberColumn("Avg Odds", format="%.3f"),
             "Value≈":   st.column_config.NumberColumn(format="%.3f"),
             "Edge %":   st.column_config.NumberColumn(format="%.1f"),
             "Stake €":  st.column_config.NumberColumn(format="%d"),
         },
     )
-else:
-    st.info("Сначала сделайте «Быстрый скрин»")
 
-# ───────────────── расчёт ставок
-if st.session_state.get("do_calc"):
-    st.session_state.pop("do_calc")
+# ────────── calculate stakes ──────────
+if st.session_state.pop("want_calc", False):
 
     if "table" not in st.session_state:
-        st.warning("Нет таблицы для расчёта")
+        st.warning("Сначала сделайте скрин / анализ")
         st.stop()
 
-    df_ed = st.session_state["table"]
-    kept = [orig for orig, use in zip(st.session_state["fast"], df_ed["Use"]) if use]
+    df_ed: pd.DataFrame = st.session_state["table"]   # то, что пользователь видит
+    kept_rows = df_ed[df_ed["Use"]]
 
-    deep_map = { (o.match,
-                  "Хозяев" if o.pick_ru.startswith("Победа хозяев") else
-                  "Гости"  if o.pick_ru.startswith("Победа гостей") else
-                  o.pick_ru): o
-                 for o in st.session_state.get("deep", []) }
+    # карта (match, side) → Outcome из deep-анализа
+    deep_map = {key_from_row(o): o for o in st.session_state.get("deep", [])}
 
     outs: list[Outcome] = []
-    for row in kept:
-        key = (row["teams"]["home"]["name"] + " – " +
-               row["teams"]["away"]["name"],
-               row["side"])
-        o = deep_map.get(key)
+    for _, r in kept_rows.iterrows():
+        o = deep_map.get(key_from_row(r))
         if not o:
-            o = stub_from_fast(row)
-            o.edge = row["value_approx"] - 1
+            o = stub_from_fast(r)
+            o.edge = r["Value≈"] - 1          # approx-edge
         outs.append(o)
 
-    outs = [o for o in outs if o.edge >= edge_pct/100]
+    # фильтр по edge-порогу
+    outs = [o for o in outs if o.edge*100 >= edge_pct]
     if not outs:
         st.warning("После фильтра edge ничего не осталось")
         st.stop()
@@ -165,8 +162,8 @@ if st.session_state.get("do_calc"):
     allocate_bank(outs, bank)
 
     fin_df = pd.DataFrame([{
-        "№": i+1, "Date": o.date, "Time": o.time, "League": o.league,
-        "Match": o.match, "Pick": o.pick_ru,
+        "№": i+1, "Date": o.date, "Time": o.time,
+        "League": o.league, "Match": o.match, "Pick": o.pick_ru,
         "Min Odds": o.k_dec, "Edge %": round(o.edge*100, 1),
         "Stake €": int(o.stake_eur)
     } for i, o in enumerate(outs)])
@@ -174,3 +171,4 @@ if st.session_state.get("do_calc"):
     st.subheader("📋 Итоговые ставки")
     st.dataframe(fin_df, hide_index=True, use_container_width=True,
                  column_config={"Stake €": st.column_config.NumberColumn(format="%d")})
+
