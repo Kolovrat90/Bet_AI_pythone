@@ -17,45 +17,45 @@ if not API_KEY:
     st.stop()
 
 # ── Inputs ────────────────────────────────────────────────────────────────
-c0, c1, c2 = st.columns([1,2,2])
+c0, c1, c2 = st.columns([1, 2, 2])
 with c0:
     today_only = st.checkbox("Сегодня", True)
 with c1:
     edge_pct = st.slider("Порог ценности, %", 1, 10, 5)
 with c2:
-    bank = st.number_input("Банк, €", 10.0, 100000.0, 1000.0, 50.0, "%.2f")
+    bank = st.number_input("Банк, €", min_value=10.0, step=50.0, value=1000.0, format="%.2f")
 
-days  = 1 if today_only else st.selectbox("Сканировать дней вперёд", [1,2,3], 0)
-top_n = st.selectbox("Топ-лиг для анализа", [10,15,20,25,30], 0)
+days  = 1 if today_only else st.selectbox("Сканировать дней вперёд", [1, 2, 3], 0)
+top_n = st.selectbox("Топ-лиг для анализа", [10, 15, 20, 25, 30], 0)
 
-# ── Последовательные кнопки ──────────────────────────────────────────────
+# ── Sequential buttons ────────────────────────────────────────────────────
 b1, b2, b3 = st.columns(3)
 with b1:
-    if st.button("⚡ 1. Быстрый скрин", key="btn_q"):
+    if st.button("⚡ 1. Быстрый скрин"):
         st.session_state.quick = True
         st.session_state.deep  = False
         st.session_state.calc  = False
 with b2:
     if st.session_state.get("quick", False):
-        if st.button("🔍 2. Глубокий анализ", key="btn_d"):
+        if st.button("🔍 2. Глубокий анализ"):
             st.session_state.deep = True
             st.session_state.calc = False
     else:
         st.button("🔍 2. Глубокий анализ", disabled=True)
 with b3:
     if st.session_state.get("deep", False):
-        if st.button("💰 3. Рассчитать ставки", key="btn_c"):
+        if st.button("💰 3. Рассчитать ставки"):
             st.session_state.calc = True
     else:
-        st.button("💰 3. Расситать ставки", disabled=True)
+        st.button("💰 3. Рассчитать ставки", disabled=True)
 
-# ── Плейсхолдеры для таблиц/метрик ────────────────────────────────────────
+# ── Placeholders ─────────────────────────────────────────────────────────
 metrics_ph = st.empty()
 table_q_ph = st.empty()
 table_d_ph = st.empty()
 table_f_ph = st.empty()
 
-# ── Шаг 1: Быстрый скрин ────────────────────────────────────────────────────
+# ── Step 1: Quick screen ───────────────────────────────────────────────────
 if st.session_state.get("quick", False):
     cands = quick_screen(days, top_n)
     st.session_state["candidates"] = cands
@@ -64,25 +64,27 @@ if st.session_state.get("quick", False):
     rows = []
     for f in cands:
         ts = datetime.fromtimestamp(f["fixture"]["timestamp"], tz=timezone.utc)
+        # league["logo"] содержит URL картинки
+        flag_url = f["league"].get("logo") or f["league"].get("flag") or ""
         rows.append({
             "No":        None,
             "Use":       True,
             "Date":      ts.date().isoformat(),
             "Time":      ts.time().strftime("%H:%M"),
-            "Flag":      f["league"].get("flag", ""),               # URL флага
+            "Flag":      flag_url,
             "League":    f["league"]["name"],
-            "Match":     f["teams"]["home"]["name"] + " – " +
-                         f["teams"]["away"]["name"],
+            "Match":     f["teams"]["home"]["name"] + " – " + f["teams"]["away"]["name"],
             "Side":      f["side"],
-            "p_est %":   round(f["p_est"]*100,1),
+            "p_est %":   round(f["p_est"]*100, 1),
             "Avg Odds":  f["k_mean"],
-            "Value≈":    round(f["value_approx"],3),
+            "Value≈":    round(f["value_approx"], 3),
             "Stake €":   0,
         })
     df_q = pd.DataFrame(rows)
-    df_q["No"] = range(1, len(df_q)+1)
+    df_q["No"] = range(1, len(df_q) + 1)
 
-    table_q_ph.data_editor(
+    # capture edited DataFrame
+    edited_q = table_q_ph.data_editor(
         df_q,
         hide_index=True,
         column_config={
@@ -96,29 +98,30 @@ if st.session_state.get("quick", False):
         },
         use_container_width=True,
     )
-    # очищаем возможные таблицы следующих шагов
+    st.session_state["edited_q"] = edited_q
+
+    # clear downstream tables
     table_d_ph.empty()
     table_f_ph.empty()
 
-# ── Шаг 2: Глубокий анализ ─────────────────────────────────────────────────
+# ── Step 2: Detailed analysis ─────────────────────────────────────────────
 if st.session_state.get("deep", False):
-    if "candidates" not in st.session_state:
+    if "edited_q" not in st.session_state:
         st.warning("Сначала выполните быстрый скрин")
     else:
-        edited_q = table_q_ph._last_value  # получаем df из редактора
-        mask = edited_q["Use"].tolist()
-        raw  = st.session_state["candidates"]
-        to_analyze = [c for c,m in zip(raw, mask) if m]
+        edited_q = st.session_state["edited_q"]
+        mask     = edited_q["Use"].tolist()
+        raw      = st.session_state["candidates"]
+        to_analyze = [c for c, m in zip(raw, mask) if m]
 
         if not to_analyze:
-            st.warning("Нужно отметить хотя бы одно событие")
+            st.warning("Отметьте хотя бы одно событие")
         else:
             outs = detailed_analysis(to_analyze, edge_pct/100.0)
             allocate_bank(outs, bank)
             st.session_state["outs_final"] = outs
             st.success(f"Глубокий анализ вернул {len(outs)} ставок")
 
-            # покажем промежуточную таблицу deep
             rows = []
             for i, o in enumerate(outs, start=1):
                 rows.append({
@@ -135,7 +138,7 @@ if st.session_state.get("deep", False):
             df_d = pd.DataFrame(rows)
             table_d_ph.dataframe(df_d, use_container_width=True)
 
-# ── Шаг 3: Рассчитать ставки ───────────────────────────────────────────────
+# ── Step 3: Final calculation ─────────────────────────────────────────────
 if st.session_state.get("calc", False):
     if "outs_final" not in st.session_state:
         st.warning("Сначала выполните глубокий анализ")
@@ -151,14 +154,13 @@ if st.session_state.get("calc", False):
                 "League":   o.league,
                 "Match":    o.match,
                 "Pick":     o.pick_ru.replace("Победа хозяев","Хозяева")
-                                         .replace("Победа гостей","Гости"),
+                                     .replace("Победа гостей","Гости"),
                 "Min Odds": o.k_dec,
                 "Edge %":   round(o.edge*100,1),
                 "Stake €":  o.stake_eur,
             })
         df_f = pd.DataFrame(rows)
 
-        # метрики
         if not df_f.empty:
             cols = metrics_ph.columns(len(df_f.columns))
             cols[df_f.columns.get_loc("Min Odds")].metric("⌀ Min Odds", f"{df_f['Min Odds'].mean():.2f}")
@@ -171,7 +173,6 @@ if st.session_state.get("calc", False):
             column_config={"Stake €": st.column_config.NumberColumn(format="%d")},
         )
 
-        # expanders
         for o in final:
             with st.expander(f"{o.league}: {o.match} → {o.pick_ru}, {o.stake_eur} €"):
                 st.write({
