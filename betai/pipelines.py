@@ -132,6 +132,7 @@ def detailed_analysis(
     4. Фильтруем по edge_min
     """
     outcomes: List[Outcome] = []
+
     for c in tqdm(candidates, desc="detailed analysis", leave=False):
         fid = c["fixture"]["id"]
         dt_utc = datetime.fromtimestamp(c["fixture"]["timestamp"], tz=timezone.utc)
@@ -142,12 +143,21 @@ def detailed_analysis(
         preds = parse_predictions(preds_json)
 
         for o in parse_odds(odds_json):
-            # точный p_model
-            pm = (
-                preds.get(o["market"], {})
-                     .get(o["line"], {})
-                     .get(o["side"], None)
-            )
+            # точный p_model: разделяем 1X2 от других рынков
+            if o["market"] == "1X2":
+                # просто берём preds["1X2"][side]
+                pm = preds.get("1X2", {}).get(o["side"])
+            elif o["market"] in ("Total", "AH"):
+                # для тоталов и азиатских фор: preds["Total" or "AH"][line][side]
+                pm = preds.get(o["market"], {}) \
+                           .get(o["line"], {}) \
+                           .get(o["side"])
+            else:
+                # на всякий случай: тот же подход
+                pm = preds.get(o["market"], {}) \
+                           .get(o["line"], {}) \
+                           .get(o["side"])
+
             if pm is None:
                 continue
 
@@ -159,7 +169,7 @@ def detailed_analysis(
                 date=dt_msk.strftime("%Y-%m-%d"),
                 time=dt_msk.strftime("%H:%M"),
                 league=c["league"]["name"],
-                match=c["teams"]["home"]["name"] + " – " + c["teams"]["away"]["name"],
+                match=f'{c["teams"]["home"]["name"]} – {c["teams"]["away"]["name"]}',
                 market=o["market"],
                 pick_ru=o["pick_ru"],
                 line=o["line"],
