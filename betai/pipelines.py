@@ -133,7 +133,7 @@ def detailed_analysis(
     """
     outcomes: List[Outcome] = []
     for c in tqdm(candidates, desc="detailed analysis", leave=False):
-        fid = c["fixture"]["fixture"]["id"]
+        fid = c["fixture"]["id"]
         dt_utc = datetime.fromtimestamp(c["fixture"]["timestamp"], tz=timezone.utc)
         dt_msk = dt_utc.astimezone(MSK)
 
