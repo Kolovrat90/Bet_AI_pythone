@@ -89,9 +89,13 @@ if "candidates" in st.session_state:
                 "Stake €":   int(o.stake_eur),
             })
         df = pd.DataFrame(rows)
-        table_view = ["No","Use","Flag","Date","Time","League","Match","Pick","Min Odds","Edge %","Stake €"]
+
+        # Выясняем, какие из нужных нам столбцов реально есть в df.columns
+        desired = ["No","Use","Flag","Date","Time","League","Match","Pick","Min Odds","Edge %","Stake €"]
+        existing = [c for c in desired if c in df.columns]
+
         table_ph.data_editor(
-            df[table_view],
+            df[existing],           # теперь берем только те, что есть
             hide_index=True,
             column_config={
                 "Use":      st.column_config.CheckboxColumn(),
@@ -101,6 +105,7 @@ if "candidates" in st.session_state:
             },
             use_container_width=True
         )
+
         # Expanders: детализация по каждому исходу
         for o in raw:
             with st.expander(f"{o.league}: {o.match} → {o.pick_ru}, Stake {o.stake_eur} €"):
