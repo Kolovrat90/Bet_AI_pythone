@@ -6,22 +6,15 @@ import pandas as pd
 from betai.pipelines import quick_screen, detailed_analysis
 from betai.models import allocate_bank
 
-# ── Page config ──────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="BetAI – Value Betting Scanner (v3)",
-    page_icon="⚽",
-    layout="wide",
-)
+# ─┬────────────────────────── page / constants ───────────────────────────┐
+st.set_page_config("BetAI – Value Betting Scanner (v3)", "⚽", layout="wide")
 st.markdown("# ⚽ BetAI – Value Betting Scanner (v3)")
 
-# ── API key ───────────────────────────────────────────────────────────────
 API_KEY = st.secrets.get("APIFOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY")
 if not API_KEY:
-    st.error(
-        "Нужен ключ APIFOOTBALL_KEY в .streamlit/secrets.toml "
-        "или как переменную окружения."
-    )
+    st.error("Добавьте APIFOOTBALL_KEY в .streamlit/secrets.toml или перем. окружения")
     st.stop()
+# └─────────────────────────────────────────────────────────────────────────┘
 
 # ── Inputs ────────────────────────────────────────────────────────────────
 c0, c1, c2 = st.columns([1, 2, 2])
@@ -30,62 +23,50 @@ with c0:
 with c1:
     edge_pct = st.slider("Порог ценности, %", 1, 10, 5)
 with c2:
-    bank = st.number_input(
-        "Банк, €",
-        min_value=10.0,
-        step=50.0,
-        value=1000.0,
-        format="%.2f",
-    )
+    bank = st.number_input("Банк, €", 10.0, step=50.0, value=1000.0, format="%.2f")
 
-days = 1 if today_only else st.selectbox("Сканировать дней вперёд", [1, 2, 3], 0)
+days  = 1 if today_only else st.selectbox("Сканировать дней вперёд", [1, 2, 3], 0)
 top_n = st.selectbox("Топ-лиг для анализа", [10, 15, 20, 25, 30], 0)
 
-st.markdown("---")
+st.divider()
 
-# ── Шаги ─────────────────────────────────────────────────────────────────
-col1, col2, col3 = st.columns([1, 1, 1])
+# ── Шаговые кнопки ────────────────────────────────────────────────────────
+col1, col2, col3 = st.columns(3)
 with col1:
-    if st.button(
-        "⚡ 1. Быстрый скрин",
-        type="primary" if "candidates" in st.session_state else "secondary",
-    ):
-        st.session_state.pop("outs_raw", None)
+    if st.button("⚡ 1. Быстрый скрин", type="primary"):
+        st.session_state.clear()
         st.session_state["candidates"] = quick_screen(days, top_n)
+
 with col2:
     if st.button(
         "🔍 2. Глубокий анализ",
         type="primary" if "candidates" in st.session_state else "secondary",
     ):
         raw = st.session_state.get("candidates", [])
-        st.session_state.pop("candidates", None)
-        st.session_state["outs_raw"] = detailed_analysis(
-            raw, edge_pct / 100.0
-        )
+        if raw:
+            st.session_state.pop("candidates")
+            st.session_state["outs_raw"] = detailed_analysis(raw, edge_pct / 100.0)
+
 with col3:
     if st.button(
         "💰 3. Рассчитать ставки",
         type="primary" if "outs_raw" in st.session_state else "secondary",
     ):
-        # просто триггер, реальный расчёт — ниже
-        pass
+        st.session_state["do_calc"] = True
 
-st.markdown("---")
+st.divider()
 
-# ── Отрисовка таблицы по шагу 1: быстрый скрин ────────────────────────────
+# ── helper: пустая таблица с нужными колонками ───────────────────────────
+def empty_df(cols):
+    return pd.DataFrame([{c: None for c in cols}]).iloc[0:0]
+
+# ── Шаг 1 — отображение fast-screen таблицы ───────────────────────────────
 if "candidates" in st.session_state:
-    cands = st.session_state["candidates"]
     rows = []
-    for i, f in enumerate(cands, start=1):
-        ts = datetime.fromtimestamp(
-            f["fixture"]["timestamp"], tz=timezone.utc
-        )
-        # логика флагов: только международные
+    for i, f in enumerate(st.session_state["candidates"], 1):
+        ts = datetime.fromtimestamp(f["fixture"]["timestamp"], tz=timezone.utc)
         league = f["league"]
-        if league["name"].startswith("UEFA"):
-            flag = league.get("logo", "")
-        else:
-            flag = league.get("flag", "")
+        flag = league.get("logo", "") if league["name"].startswith("UEFA") else league.get("flag", "")
         rows.append(
             {
                 "№": i,
@@ -102,87 +83,119 @@ if "candidates" in st.session_state:
                 "Stake €": 0,
             }
         )
-    df_q = pd.DataFrame(rows)
-    edited_q = st.data_editor(
-        df_q,
-        hide_index=True,
-        column_config={
-            "Use": st.column_config.CheckboxColumn(),
-            "Flag": st.column_config.ImageColumn("", width="small"),
-            "p_est %": st.column_config.NumberColumn(format="%.1f %"),
-            "Avg Odds": st.column_config.NumberColumn(format="%.3f"),
-            "Value≈": st.column_config.NumberColumn(format="%.3f"),
-            "Stake €": st.column_config.NumberColumn(format="%d"),
-        },
-        use_container_width=True,
-    )
-    st.session_state["edited_q"] = edited_q
 
-# ── Отрисовка таблицы по шагу 2: глубокий анализ ──────────────────────────
+    df_fast = pd.DataFrame(rows) if rows else empty_df(
+        ["№", "Use", "Date", "Time", "Flag", "League", "Match",
+         "Side", "p_est %", "Avg Odds", "Value≈", "Stake €"]
+    )
+    st.data_editor(
+        df_fast,
+        key="edited_q",
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Use":      st.column_config.CheckboxColumn(),
+            "Flag":     st.column_config.ImageColumn("", width="small"),
+            "p_est %":  st.column_config.NumberColumn(format="%.1f %"),
+            "Avg Odds": st.column_config.NumberColumn(format="%.3f"),
+            "Value≈":   st.column_config.NumberColumn(format="%.3f"),
+            "Stake €":  st.column_config.NumberColumn(format="%d"),
+        },
+    )
+    st.success(f"Быстрый скрин: найдено {len(rows)} событий")
+
+# ── Шаг 2 — таблица после глуб. анализа ───────────────────────────────────
 elif "outs_raw" in st.session_state:
     outs = st.session_state["outs_raw"]
     rows = []
-    for i, o in enumerate(outs, start=1):
+    for i, o in enumerate(outs, 1):
         rows.append(
             {
-                "№": i,
-                "Use": True,
-                "Date": o.date,
-                "Time": o.time,
-                "Flag": o.flag_url,
-                "League": o.league,
-                "Match": o.match,
-                "Pick": o.pick_ru,
+                "№":        i,
+                "Use":      True,
+                "Flag":     o.flag_url,
+                "Date":     o.date,
+                "Time":     o.time,
+                "League":   o.league,
+                "Match":    o.match,
+                "Pick":     o.pick_ru,
                 "Min Odds": o.k_dec,
-                "Edge %": round(o.edge * 100, 1),
-                "Stake €": 0,
+                "Edge %":   round(o.edge * 100, 1),
+                "Stake €":  0,
             }
         )
-    df_d = pd.DataFrame(rows)
-    edited_d = st.data_editor(
-        df_d,
-        hide_index=True,
-        column_config={
-            "Use": st.column_config.CheckboxColumn(),
-            "Flag": st.column_config.ImageColumn("", width="small"),
-            "Min Odds": st.column_config.NumberColumn(format="%.2f"),
-            "Edge %": st.column_config.NumberColumn(format="%.1f %"),
-            "Stake €": st.column_config.NumberColumn(format="%d"),
-        },
-        use_container_width=True,
-    )
-    st.session_state["edited_d"] = edited_d
 
-# ── Шаг 3: расчёт ставок и конечная таблица ────────────────────────────────
-if "outs_raw" in st.session_state and "edited_d" in st.session_state:
-    mask = st.session_state["edited_d"]["Use"].tolist()
+    df_deep = pd.DataFrame(rows) if rows else empty_df(
+        ["№", "Use", "Flag", "Date", "Time", "League", "Match",
+         "Pick", "Min Odds", "Edge %", "Stake €"]
+    )
+
+    st.data_editor(
+        df_deep,
+        key="edited_d",
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Use":      st.column_config.CheckboxColumn(),
+            "Flag":     st.column_config.ImageColumn("", width="small"),
+            "Min Odds": st.column_config.NumberColumn(format="%.2f"),
+            "Edge %":   st.column_config.NumberColumn(format="%.1f %"),
+            "Stake €":  st.column_config.NumberColumn(format="%d"),
+        },
+    )
+    st.success(f"Глубокий анализ вернул {len(rows)} ставок")
+
+# ── Шаг 3 — финальный расчёт Келли ────────────────────────────────────────
+if st.session_state.get("do_calc") and "outs_raw" in st.session_state:
+    st.session_state.pop("do_calc")
+    edited = st.session_state.get("edited_d")
+    if edited is None or edited.empty or "Use" not in edited.columns:
+        st.warning("Отметьте события, прежде чем рассчитывать ставки")
+        st.stop()
+
+    mask = edited["Use"].tolist()
     kept = [o for o, m in zip(st.session_state["outs_raw"], mask) if m]
-    if kept:
-        allocate_bank(kept, bank)
-        final_rows = []
-        for i, o in enumerate(kept, start=1):
-            final_rows.append(
-                {
-                    "№": i,
-                    "Date": o.date,
-                    "Time": o.time,
-                    "League": o.league,
-                    "Match": o.match,
-                    "Pick": o.pick_ru.replace("Победа хозяев", "Хозяева")
-                                     .replace("Победа гостей", "Гости"),
-                    "Min Odds": o.k_dec,
-                    "Edge %": f"{o.edge*100:.1f} %",
-                    "Stake €": int(o.stake_eur),
-                }
-            )
-        st.markdown("### Итоговые ставки")
-        st.dataframe(
-            pd.DataFrame(final_rows),
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "Stake €": st.column_config.NumberColumn(format="%d")
-            },
+    if not kept:
+        st.warning("Ни одно событие не выбрано")
+        st.stop()
+
+    allocate_bank(kept, bank)
+
+    final_rows = []
+    for i, o in enumerate(kept, 1):
+        final_rows.append(
+            {
+                "№": i,
+                "Date": o.date,
+                "Time": o.time,
+                "League": o.league,
+                "Match": o.match,
+                "Pick": o.pick_ru.replace("Победа хозяев", "Хозяева")
+                                 .replace("Победа гостей", "Гости"),
+                "Min Odds": o.k_dec,
+                "Edge %": f"{o.edge*100:.1f} %",
+                "Stake €": int(o.stake_eur),
+            }
         )
-    else:
-        st.warning("Нечего рассчитывать — ни одна строка не отмечена.")
+
+    st.subheader("📋 Итоговые ставки")
+    st.dataframe(
+        pd.DataFrame(final_rows),
+        hide_index=True,
+        use_container_width=True,
+        column_config={"Stake €": st.column_config.NumberColumn(format="%d")},
+    )
+
+    # разворачиваем аналитику
+    for o in kept:
+        with st.expander(f"{o.league}: {o.match} → {o.pick_ru}, {int(o.stake_eur)} €"):
+            st.json(
+                {
+                    "p_model": f"{o.p_model:.3f}",
+                    "edge":    f"{o.edge*100:.1f} %",
+                    "f_raw":   f"{o.f_raw:.3f}",
+                    "f_final": f"{o.f_final:.3f}",
+                },
+                expanded=False,
+            )
+            st.bar_chart({"p_model": [o.p_model]})
