@@ -41,6 +41,7 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           # Убедимся, что наш пакет установлен в editable-режиме
           pip install -e .
+          pip install pytest
 
       # 5) Запускаем тесты
       - name: Run pytest
