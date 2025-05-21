@@ -1,5 +1,5 @@
 # ─────────────────────────────  app.py  ──────────────────────────────
-"""Streamlit GUI for BetAI (v3.2) – динамический порог Edge."""
+"""Streamlit GUI for BetAI (v3.2) – порог Edge (авто/ручной)."""
 
 import os
 from datetime import datetime
@@ -10,49 +10,63 @@ import pandas as pd
 import streamlit as st
 
 from betai.pipelines import quick_screen, detailed_analysis
-from betai.models     import allocate_bank, Outcome          # уже были в старом коде
+from betai.models     import allocate_bank, Outcome
 from betai.utils      import render_outcome
 
 # ── Page config ───────────────────────────────────────────────────────
-st.set_page_config(page_title="BetAI – Value Betting Scanner",
-                   page_icon="⚽", layout="wide")
+st.set_page_config(
+    page_title="BetAI – Value Betting Scanner",
+    page_icon="⚽",
+    layout="wide",
+)
 st.markdown("# ⚽ BetAI – Value Betting Scanner (v3.2)")
 
 # ── API-ключ  ─────────────────────────────────────────────────────────
 if not (st.secrets.get("APIFOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY")):
-    st.error("Нужен ключ **APIFOOTBALL_KEY** в `.streamlit/secrets.toml` "
-             "или как переменную окружения.")
+    st.error(
+        "Нужен ключ **APIFOOTBALL_KEY** в `.streamlit/secrets.toml` "
+        "или как переменную окружения."
+    )
     st.stop()
 
 # ── Сайдбар: настройки пользователя ──────────────────────────────────
 st.sidebar.header("Параметры сканирования")
 
 today_only = st.sidebar.checkbox("Только сегодня", value=True)
-days = 1 if today_only else st.sidebar.selectbox("Сканировать дней вперёд",
-                                                 [1, 2, 3], index=0)
+days = 1 if today_only else st.sidebar.selectbox(
+    "Сканировать дней вперёд", [1, 2, 3], index=0
+)
 
-threshold_mode = st.sidebar.radio("Режим порога Edge",
-                                  ["Динамический", "Статический"], index=0)
-if threshold_mode == "Статический":
-    edge_pct_static = st.sidebar.slider("Edge %, статический",
-                                        1.0, 10.0, 4.0, 0.5)
+threshold_mode = st.sidebar.radio(
+    "Порог Edge",
+    ["Автоматический (верхняя ⅓)", "Ручной (слайдер)"],
+    index=0,
+    help=(
+        "Авто: вычисляется по выборке (верхняя треть), но не ниже 4 %.\n"
+        "Ручной: задаёте фиксированный порог."
+    ),
+)
+if threshold_mode == "Ручной (слайдер)":
+    edge_pct_static = st.sidebar.slider(
+        "Edge %, ручной", 1.0, 10.0, 4.0, 0.5
+    )
 else:
-    st.sidebar.markdown("Динамический: верхняя треть результатов, "
-                        "но **≥ 4 %**")
+    st.sidebar.caption("⚙️ Порог вычислится автоматически (≥ 4 %)")
 
-bank = st.sidebar.number_input("Банк, €",
-                               min_value=10.0, value=1000.0,
-                               step=50.0, format="%.2f")
-top_n = st.sidebar.selectbox("Топ-лиг для анализа",
-                             [10, 15, 20, 25, 30], index=0)
+bank = st.sidebar.number_input(
+    "Банк, €", min_value=10.0, value=1000.0,
+    step=50.0, format="%.2f"
+)
+top_n = st.sidebar.selectbox(
+    "Топ-лиг для анализа", [10, 15, 20, 25, 30], index=0
+)
 max_events = 30   # жёсткий лимит fast-этапа
 
 # ── Кнопки-шаги ───────────────────────────────────────────────────────
 col_btn = st.columns(3)
 btn_fast  = col_btn[0].button("⚡ 1. Быстрый скрин",  use_container_width=True)
 btn_deep  = col_btn[1].button("🔍 2. Глубокий анализ", use_container_width=True)
-btn_stake = col_btn[2].button("💰 3. Рассчитать ставки",
-                              use_container_width=True)
+btn_stake = col_btn[2].button("💰 3. Рассчитать ставки", use_container_width=True)
 
 table_ph   = st.empty()
 notice_ph  = st.empty()
@@ -63,43 +77,40 @@ if btn_fast:
     cand = quick_screen(days, top_n, max_events=max_events)
     st.session_state["fast_raw"] = cand
 
-    # формируем DataFrame
     rows = []
     for i, c in enumerate(cand, 1):
         ts = datetime.fromtimestamp(c["fixture"]["timestamp"])
-        rows.append(dict(
-            No         = i,
-            Use        = True,
-            Date       = ts.date().isoformat(),
-            Time       = ts.time().strftime("%H:%M"),
-            League     = c["league"]["name"],
-            Match      = c["teams"]["home"]["name"] + " – " +
-                         c["teams"]["away"]["name"],
-            side       = c["side"],
-            p_est      = round(c["p_est"] * 100, 1),
-            k_mean     = c["k_mean"],
-            value_approx = round(c["value_approx"], 3),
-            Flag       = c["league"]["flag"],
-            Min_Odds   = None,
-            Edge_pct   = None,
-            Stake_eur  = 0,
-        ))
+        rows.append({
+            "No":           i,
+            "Use":          True,
+            "Flag":         c["league"]["flag"],
+            "Date":         ts.date().isoformat(),
+            "Time":         ts.time().strftime("%H:%M"),
+            "League":       c["league"]["name"],
+            "Match":        f"{c['teams']['home']['name']} – {c['teams']['away']['name']}",
+            "side":         c["side"],
+            "p_est":        round(c["p_est"] * 100, 1),
+            "k_mean":       c["k_mean"],
+            "value_approx": round(c["value_approx"], 3),
+            "Min_Odds":     None,
+            "Edge_pct":     None,
+            "Stake_eur":    0,
+        })
 
-    df_fast = pd.DataFrame(rows)[
-        ["No", "Use", "Date", "Time", "League", "Match", "side",
-         "p_est", "k_mean", "value_approx",
-         "Min_Odds", "Edge_pct", "Stake_eur"]
-    ]
+    df_fast = pd.DataFrame(rows)[[
+        "No", "Use", "Flag", "Date", "Time", "League", "Match", "side",
+        "p_est", "k_mean", "value_approx", "Min_Odds", "Edge_pct", "Stake_eur"
+    ]]
 
     edited = table_ph.data_editor(
         df_fast,
         hide_index=True,
         column_config={
-            "Use": st.column_config.CheckboxColumn(),
-            "p_est": st.column_config.NumberColumn("p_est %", format="%.1f %"),
-            "k_mean": st.column_config.NumberColumn("Avg Odds", format="%.3f"),
-            "value_approx": st.column_config.NumberColumn("Value≈",
-                                                          format="%.3f"),
+            "Use":          st.column_config.CheckboxColumn(),
+            "Flag":         st.column_config.ImageColumn(width="sm"),
+            "p_est":        st.column_config.NumberColumn("p_est %", format="%.1f %"),
+            "k_mean":       st.column_config.NumberColumn("Avg Odds", format="%.3f"),
+            "value_approx": st.column_config.NumberColumn("Value≈", format="%.3f"),
         },
         use_container_width=True,
         key="fast_editor",
@@ -116,7 +127,6 @@ if btn_deep:
 
     df_e = st.session_state["edited_d"]
     raw  = st.session_state["fast_raw"]
-
     mask = df_e["Use"].tolist()
     kept = [r for r, m in zip(raw, mask) if m]
 
@@ -126,13 +136,22 @@ if btn_deep:
         st.session_state["deep_done"] = True
         st.stop()
 
-    # deep-этап сначала считает ВСЕ исходы (без фильтра)
+    # deep-этап: считаем ВСЕ исходы без фильтра
     outs: List[Outcome] = detailed_analysis(kept, edge_min=None)
 
-    # определяем порог
+    if not outs:
+        notice_ph.error(
+            "Глубокий анализ: котировок для выбранных матчей не найдено."
+        )
+        st.stop()
+
     edges = np.array([o.edge for o in outs])
-    dyn_thr = max(0.04, np.percentile(edges, 66))   # ≥ 4 %
-    if threshold_mode == "Динамический":
+    if len(edges) >= 3:
+        dyn_thr = max(0.04, np.percentile(edges, 66))
+    else:
+        dyn_thr = max(0.04, edges.min())
+
+    if threshold_mode.startswith("Автомат"):
         edge_thr = dyn_thr
     else:
         edge_thr = edge_pct_static / 100
@@ -145,13 +164,12 @@ if btn_deep:
     st.session_state["deep_map"]  = deep_map
     st.session_state["deep_done"] = True
     notice_ph.success(
-        f"Глубокий анализ вернул {len(outs)} исходов "
-        f"(edge ≥ {edge_thr*100:.1f} %)"
+        f"Глубокий анализ вернул {len(outs)} исходов (edge ≥ {edge_thr*100:.1f} %)"
     )
 
-    # enrich table
+    # Добавляем Min_Odds и Edge_pct в табличку, снимаем галочки ниже порога
     def enrich(row):
-        key = (row["Match"], "1X2")      # пока анализируем только рынок 1X2
+        key = (row["Match"], "1X2")
         o = deep_map.get(key)
         if o:
             row["Min_Odds"] = o.k_dec
@@ -173,7 +191,7 @@ if btn_deep:
         },
     )
 
-    # разворачиваемые блоки
+    # Разворачиваемые блоки с подробным анализом
     st.markdown("## 📊 Детальный анализ")
     for o in outs:
         with st.expander(f"{o.match} – {o.pick_ru}"):
@@ -213,9 +231,8 @@ if btn_stake:
 
     cols = metrics_ph.columns(3)
     cols[0].metric("⌀ Min Odds", f"{res['Min Odds'].mean():.2f}")
-    cols[1].metric("⌀ Edge %",  f"{res['Edge %'].mean():.1f} %")
-    cols[2].metric("Σ Stake €", f"{res['Stake €'].sum()}",
-                   delta=f"{len(res)} picks")
+    cols[1].metric("⌀ Edge %",   f"{res['Edge %'].mean():.1f} %")
+    cols[2].metric("Σ Stake €",  f"{res['Stake €'].sum()}", delta=f"{len(res)} picks")
 
     st.dataframe(
         res,
