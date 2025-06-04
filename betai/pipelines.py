@@ -27,6 +27,8 @@ from .models import (
     value_approx,
     apply_shrinkage,
 )
+from .fast_filter import fast_filter_1x2, FastParams
+from .constants import K_MIN_DEFAULT
 
 MSK = pytz.timezone("Europe/Moscow")
 
@@ -60,6 +62,7 @@ def quick_screen(
     p_high: float = 0.75,
     max_events: int = 30,
     hfa: float = 60.0,
+    k_min: float = K_MIN_DEFAULT,
 ) -> List[Dict[str, Any]]:
     """
     Быстрый первичный скрин:
@@ -128,23 +131,27 @@ def quick_screen(
                 continue
 
             home_k, draw_k, away_k = k_vals
-            sides = [
-                ("Home", p_h, home_k),
-                ("Draw", p_d, draw_k),
-                ("Away", p_a, away_k),
-            ]
+            bk_cnt = len(odds_json[0]["bookmakers"])
 
-            # ищем лучший value≈ для матча
+            fast_candidates = fast_filter_1x2(
+                home_k,
+                draw_k,
+                away_k,
+                {"Home": p_h, "Draw": p_d, "Away": p_a},
+                bk_cnt,
+                FastParams(k_min=k_min),
+            )
+
             best_val = 0.0
             best_side: dict[str, Any] | None = None
-            for side, p_est, k in sides:
-                val = value_approx(p_est, k)
-                if val >= value_thr and p_low <= p_est <= p_high and val > best_val:
+            for sel in fast_candidates:
+                val = value_approx(sel.p_est, sel.k_offer)
+                if val >= value_thr and p_low <= sel.p_est <= p_high and val > best_val:
                     best_val = val
                     best_side = dict(
-                        side=side,
-                        p_est=p_est,
-                        k_mean=k,
+                        side=sel.side,
+                        p_est=sel.p_est,
+                        k_mean=sel.k_offer,
                         value_approx=val,
                     )
 
