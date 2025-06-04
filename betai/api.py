@@ -13,6 +13,11 @@ import requests
 from dotenv import load_dotenv
 from sqlitedict import SqliteDict
 
+# --- New data providers --------------------------------------------------
+SSTATS_KEY = os.getenv("SSTATS_KEY")
+SSTATS_BASE = "https://sstats.net/api/v1"
+OPEN_METEO_BASE = "https://api.open-meteo.com/v1/forecast"
+
 # ---------------------------------------------------------------------
 # конфигурация
 
@@ -140,3 +145,28 @@ def save_elo(team_id: int, date_str: str, elo: float) -> None:
         (date_str, team_id, elo),
     )
     _conn.commit()
+
+
+# ---------------------------------------------------------------------
+# Additional data providers
+
+def get_sstats(path: str, params: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Query sstats.net API."""
+    if params is None:
+        params = {}
+    headers = {"Authorization": f"Bearer {SSTATS_KEY}"}
+    resp = requests.get(f"{SSTATS_BASE}/{path}", headers=headers, params=params, timeout=20)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_weather(latitude: float, longitude: float) -> Dict[str, Any]:
+    """Return weather forecast for given coordinates."""
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "hourly": "temperature_2m,wind_speed_10m,precipitation_probability",
+    }
+    resp = requests.get(OPEN_METEO_BASE, params=params, timeout=20)
+    resp.raise_for_status()
+    return resp.json()
